@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../auth/login_screen.dart';
+import 'profile_screen.dart';
+import 'session_history_screen.dart';
+import 'recognition_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -112,12 +115,8 @@ class HomeScreen extends StatelessWidget {
               tag: 'Coming Soon',
               tagColor: Colors.orange,
               onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('PSL Recognition — coming after dataset collection is complete!'),
-                    backgroundColor: Color(0xFF1F3864),
-                  ),
-                );
+                Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const RecognitionScreen()));
               },
             ),
 
@@ -130,12 +129,8 @@ class HomeScreen extends StatelessWidget {
               tag: 'Coming Soon',
               tagColor: Colors.orange,
               onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Session history will be available once the AI pipeline is complete.'),
-                    backgroundColor: Color(0xFF1F3864),
-                  ),
-                );
+                Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const SessionHistoryScreen()));
               },
             ),
 
@@ -148,8 +143,9 @@ class HomeScreen extends StatelessWidget {
               tag: 'Available',
               tagColor: Colors.green,
               onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Profile screen — coming next!')),
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
                 );
               },
             ),

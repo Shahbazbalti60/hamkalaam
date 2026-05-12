@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../auth/login_screen.dart';
+import '../admin/admin_user_management_screen.dart';
 
 class AdminHomeScreen extends StatelessWidget {
   const AdminHomeScreen({super.key});
@@ -139,9 +140,8 @@ class AdminHomeScreen extends StatelessWidget {
               tag: 'Active',
               tagColor: Colors.green,
               onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('User Management — coming next!')),
-                );
+                Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const AdminUserManagementScreen()));
               },
             ),
 

@@ -54,34 +54,58 @@ class AuthService extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
-    try {
-      final response = await _dio.post(
-        '$baseUrl/auth/login/',
-        data: {'email': email, 'password': password},
-      );
+    // ── TEMPORARY FAKE LOGIN FOR DEVELOPMENT ──
+    await Future.delayed(const Duration(milliseconds: 800));
 
-      if (response.statusCode == 200) {
-        _accessToken = response.data['access_token'];
-        await _storage.write(key: 'access_token', value: _accessToken);
-        _extractUserInfo(_accessToken!);
-        _isLoading = false;
-        notifyListeners();
-        return {'success': true, 'role': _userRole};
-      }
-    } on DioException catch (e) {
+    if (email == 'test@test.com' && password == 'test1234') {
+      _accessToken = 'fake_user_token';
+      _userRole = 'User';
+      _userName = 'Shahbaz Hussain';
+      _userEmail = 'test@test.com';
       _isLoading = false;
       notifyListeners();
-      if (e.response?.statusCode == 401) {
-        return {'success': false, 'message': 'Invalid email or password'};
-      } else if (e.response?.statusCode == 403) {
-        return {'success': false, 'message': 'Please verify your email first'};
-      }
-      return {'success': false, 'message': 'Cannot connect to server'};
+      return {'success': true, 'role': 'User'};
     }
+
+    if (email == 'admin@test.com' && password == 'admin1234') {
+      _accessToken = 'fake_admin_token';
+      _userRole = 'Admin';
+      _userName = 'Admin User';
+      _userEmail = 'admin@test.com';
+      _isLoading = false;
+      notifyListeners();
+      return {'success': true, 'role': 'Admin'};
+    }
+    // ── END FAKE LOGIN ──
+
+    // Real Flask API call (uncomment when backend is ready)
+    // try {
+    //   final response = await _dio.post(
+    //     '$baseUrl/auth/login/',
+    //     data: {'email': email, 'password': password},
+    //   );
+    //   if (response.statusCode == 200) {
+    //     _accessToken = response.data['access_token'];
+    //     await _storage.write(key: 'access_token', value: _accessToken);
+    //     _extractUserInfo(_accessToken!);
+    //     _isLoading = false;
+    //     notifyListeners();
+    //     return {'success': true, 'role': _userRole};
+    //   }
+    // } on DioException catch (e) {
+    //   _isLoading = false;
+    //   notifyListeners();
+    //   if (e.response?.statusCode == 401) {
+    //     return {'success': false, 'message': 'Invalid email or password'};
+    //   } else if (e.response?.statusCode == 403) {
+    //     return {'success': false, 'message': 'Please verify your email first'};
+    //   }
+    //   return {'success': false, 'message': 'Cannot connect to server'};
+    // }
 
     _isLoading = false;
     notifyListeners();
-    return {'success': false, 'message': 'Something went wrong'};
+    return {'success': false, 'message': 'Invalid email or password'};
   }
 
   Future<Map<String, dynamic>> register(
