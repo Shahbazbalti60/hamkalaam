@@ -7,7 +7,8 @@ class AuthService extends ChangeNotifier {
   final Dio _dio = Dio();
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
-  static const String baseUrl = 'http://127.0.0.1:5000/api';
+  // Change this to your deployed backend URL when ready
+  static const String baseUrl = 'http://127.0.0.1:5000/api/auth';
 
   String? _accessToken;
   String? _userRole;
@@ -54,58 +55,34 @@ class AuthService extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
-    // ── TEMPORARY FAKE LOGIN FOR DEVELOPMENT ──
-    await Future.delayed(const Duration(milliseconds: 800));
+    try {
+      final response = await _dio.post(
+        '$baseUrl/login',
+        data: {'email': email, 'password': password},
+      );
 
-    if (email == 'test@test.com' && password == 'test1234') {
-      _accessToken = 'fake_user_token';
-      _userRole = 'User';
-      _userName = 'Shahbaz Hussain';
-      _userEmail = 'test@test.com';
+      if (response.statusCode == 200) {
+        _accessToken = response.data['access_token'];
+        await _storage.write(key: 'access_token', value: _accessToken);
+        _extractUserInfo(_accessToken!);
+        _isLoading = false;
+        notifyListeners();
+        return {'success': true, 'role': _userRole};
+      }
+    } on DioException catch (e) {
       _isLoading = false;
       notifyListeners();
-      return {'success': true, 'role': 'User'};
+      if (e.response?.statusCode == 401) {
+        return {'success': false, 'message': 'Invalid email or password'};
+      } else if (e.response?.statusCode == 403) {
+        return {'success': false, 'message': 'Please verify your email first'};
+      }
+      return {'success': false, 'message': 'Cannot connect to server'};
     }
-
-    if (email == 'admin@test.com' && password == 'admin1234') {
-      _accessToken = 'fake_admin_token';
-      _userRole = 'Admin';
-      _userName = 'Admin User';
-      _userEmail = 'admin@test.com';
-      _isLoading = false;
-      notifyListeners();
-      return {'success': true, 'role': 'Admin'};
-    }
-    // ── END FAKE LOGIN ──
-
-    // Real Flask API call (uncomment when backend is ready)
-    // try {
-    //   final response = await _dio.post(
-    //     '$baseUrl/auth/login/',
-    //     data: {'email': email, 'password': password},
-    //   );
-    //   if (response.statusCode == 200) {
-    //     _accessToken = response.data['access_token'];
-    //     await _storage.write(key: 'access_token', value: _accessToken);
-    //     _extractUserInfo(_accessToken!);
-    //     _isLoading = false;
-    //     notifyListeners();
-    //     return {'success': true, 'role': _userRole};
-    //   }
-    // } on DioException catch (e) {
-    //   _isLoading = false;
-    //   notifyListeners();
-    //   if (e.response?.statusCode == 401) {
-    //     return {'success': false, 'message': 'Invalid email or password'};
-    //   } else if (e.response?.statusCode == 403) {
-    //     return {'success': false, 'message': 'Please verify your email first'};
-    //   }
-    //   return {'success': false, 'message': 'Cannot connect to server'};
-    // }
 
     _isLoading = false;
     notifyListeners();
-    return {'success': false, 'message': 'Invalid email or password'};
+    return {'success': false, 'message': 'Something went wrong'};
   }
 
   Future<Map<String, dynamic>> register(
@@ -115,7 +92,7 @@ class AuthService extends ChangeNotifier {
 
     try {
       final response = await _dio.post(
-        '$baseUrl/auth/register/',
+        '$baseUrl/register',
         data: {
           'name': name,
           'email': email,
@@ -148,6 +125,19 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    try {
+      if (_accessToken != null) {
+        await _dio.post(
+          '$baseUrl/logout',
+          options: Options(
+            headers: {'Authorization': 'Bearer $_accessToken'},
+          ),
+        );
+      }
+    } catch (e) {
+      // Even if logout API fails, clear local tokens
+    }
+
     _accessToken = null;
     _userRole = null;
     _userName = null;
@@ -159,10 +149,30 @@ class AuthService extends ChangeNotifier {
   Future<Map<String, dynamic>> forgotPassword(String email) async {
     try {
       final response = await _dio.post(
-        '$baseUrl/auth/password-reset/',
+        '$baseUrl/forgot-password',
         data: {'email': email},
       );
       if (response.statusCode == 200) {
+        return {'success': true};
+      }
+    } on DioException {
+      return {'success': false, 'message': 'Cannot connect to server'};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
+  Future<Map<String, dynamic>> updateProfile(String name) async {
+    try {
+      final response = await _dio.put(
+        '$baseUrl/profile',
+        data: {'name': name},
+        options: Options(
+          headers: {'Authorization': 'Bearer $_accessToken'},
+        ),
+      );
+      if (response.statusCode == 200) {
+        _userName = name;
+        notifyListeners();
         return {'success': true};
       }
     } on DioException {
