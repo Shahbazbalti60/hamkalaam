@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../auth/login_screen.dart';
 import '../admin/admin_user_management_screen.dart';
+import '../admin/admin_dataset_screen.dart';
 
 class AdminHomeScreen extends StatelessWidget {
   const AdminHomeScreen({super.key});
@@ -122,11 +123,9 @@ class AdminHomeScreen extends StatelessWidget {
               tag: 'Active',
               tagColor: Colors.green,
               onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Dataset Management module — coming next!'),
-                    backgroundColor: Color(0xFF1F3864),
-                  ),
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AdminDatasetScreen()),
                 );
               },
             ),
