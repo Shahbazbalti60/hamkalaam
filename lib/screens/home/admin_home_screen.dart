@@ -4,6 +4,7 @@ import '../../services/auth_service.dart';
 import '../auth/login_screen.dart';
 import '../admin/admin_user_management_screen.dart';
 import '../admin/admin_dataset_screen.dart';
+import 'profile_screen.dart';
 
 class AdminHomeScreen extends StatelessWidget {
   const AdminHomeScreen({super.key});
@@ -38,60 +39,70 @@ class AdminHomeScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Admin welcome card
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF1F3864), Color(0xFF2E5090)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
+            // Admin welcome card — tapping it opens the profile too, since
+            // it's the most natural "this is you" element on the dashboard.
+            GestureDetector(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                );
+              },
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF1F3864), Color(0xFF2E5090)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF1F3864).withOpacity(0.3),
+                      blurRadius: 15,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
                 ),
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF1F3864).withOpacity(0.3),
-                    blurRadius: 15,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 50,
-                        height: 50,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(15),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 50,
+                          height: 50,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(15),
+                          ),
+                          child: const Icon(Icons.admin_panel_settings, color: Colors.white, size: 28),
                         ),
-                        child: const Icon(Icons.admin_panel_settings, color: Colors.white, size: 28),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Administrator', style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 13)),
-                            Text(
-                              authService.userName ?? 'Admin',
-                              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
-                            ),
-                          ],
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Administrator', style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 13)),
+                              Text(
+                                authService.userName ?? 'Admin',
+                                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Manage the HamKalaam dataset, users, and system settings.',
-                    style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13, height: 1.5),
-                  ),
-                ],
+                        Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.7)),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Manage the HamKalaam dataset, users, and system settings.',
+                      style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13, height: 1.5),
+                    ),
+                  ],
+                ),
               ),
             ),
 
@@ -141,6 +152,22 @@ class AdminHomeScreen extends StatelessWidget {
               onTap: () {
                 Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const AdminUserManagementScreen()));
+              },
+            ),
+
+            const SizedBox(height: 12),
+
+            _AdminActionCard(
+              icon: Icons.person_outline,
+              title: 'My Profile',
+              subtitle: 'Manage your account and preferences',
+              tag: 'Active',
+              tagColor: Colors.green,
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                );
               },
             ),
 

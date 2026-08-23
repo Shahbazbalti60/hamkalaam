@@ -261,20 +261,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               onPressed: () async {
                                 if (_formKey.currentState!.validate()) {
                                   setState(() => _isSaving = true);
-                                  // Will connect to Flask API later
-                                  await Future.delayed(
-                                      const Duration(seconds: 1));
-                                  setState(() {
-                                    _isSaving = false;
-                                    _isEditing = false;
-                                  });
-                                  if (context.mounted) {
+
+                                  final result = await authService
+                                      .updateProfile(
+                                          _nameController.text.trim());
+
+                                  if (!mounted) return;
+
+                                  setState(() => _isSaving = false);
+
+                                  if (result['success'] == true) {
+                                    setState(() => _isEditing = false);
                                     ScaffoldMessenger.of(context)
                                         .showSnackBar(
                                       const SnackBar(
                                         content: Text(
                                             'Profile updated successfully!'),
                                         backgroundColor: Colors.green,
+                                      ),
+                                    );
+                                  } else {
+                                    ScaffoldMessenger.of(context)
+                                        .showSnackBar(
+                                      SnackBar(
+                                        content: Text(result['message'] ??
+                                            'Failed to update profile'),
+                                        backgroundColor: Colors.red,
                                       ),
                                     );
                                   }
