@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:camera/camera.dart';
 
 class RecognitionScreen extends StatefulWidget {
   const RecognitionScreen({super.key});
@@ -13,8 +14,83 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   final List<String> _wordStream = [];
   String? _generatedSentence;
 
-  // Dummy demo flow
+  // --- Camera state (Step 3a: real live preview) ---
+  CameraController? _cameraController;
+  Future<void>? _initializeCameraFuture;
+  String? _cameraError;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeCameraFuture = _initCamera();
+  }
+
+  Future<void> _initCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        setState(() => _cameraError = 'No camera found on this device.');
+        return;
+      }
+
+      // Prefer the front camera (selfie-style) since the person signs
+      // facing their own device, same as a video call.
+      final selectedCamera = cameras.firstWhere(
+        (cam) => cam.lensDirection == CameraLensDirection.front,
+        orElse: () => cameras.first,
+      );
+
+      final controller = CameraController(
+        selectedCamera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
+
+      await controller.initialize();
+
+      if (!mounted) return;
+
+      setState(() {
+        _cameraController = controller;
+        _cameraError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _cameraError = _friendlyCameraError(e);
+      });
+    }
+  }
+
+  String _friendlyCameraError(Object e) {
+    final message = e.toString();
+    if (message.contains('NotAllowedError') ||
+        message.contains('CameraAccessDenied') ||
+        message.contains('permission')) {
+      return 'Camera access was denied. Please allow camera permission and reload.';
+    }
+    if (message.contains('NotFoundError')) {
+      return 'No camera device was found.';
+    }
+    return 'Could not start the camera. Please check your device and try again.';
+  }
+
+  @override
+  void dispose() {
+    _cameraController?.dispose();
+    super.dispose();
+  }
+
+  // Dummy demo flow — word stream / sentence generation is still
+  // simulated for now. Real landmark-based recognition comes in Step 3b.
   void _toggleSigning() {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Camera is not ready yet.')),
+      );
+      return;
+    }
+
     setState(() {
       _isSigning = !_isSigning;
       if (!_isSigning) {
@@ -99,73 +175,11 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
             flex: 5,
             child: Stack(
               children: [
-                // Camera placeholder
                 Container(
                   width: double.infinity,
+                  height: double.infinity,
                   color: Colors.grey[900],
-                  child: _isSigning
-                      ? Stack(
-                          children: [
-                            // Simulated camera feed
-                            Container(
-                              width: double.infinity,
-                              height: double.infinity,
-                              color: Colors.grey[850],
-                              child: const Center(
-                                child: Icon(
-                                  Icons.videocam,
-                                  size: 80,
-                                  color: Colors.white12,
-                                ),
-                              ),
-                            ),
-                            // Landmark overlay simulation
-                            Positioned(
-                              top: 20,
-                              left: 20,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 10, vertical: 5),
-                                decoration: BoxDecoration(
-                                  color: Colors.green.withOpacity(0.8),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: const Row(
-                                  children: [
-                                    Icon(Icons.fiber_manual_record,
-                                        color: Colors.white, size: 10),
-                                    SizedBox(width: 4),
-                                    Text('Hand Detected',
-                                        style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 12)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        )
-                      : Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.videocam_off,
-                                  size: 60, color: Colors.white24),
-                              const SizedBox(height: 12),
-                              const Text(
-                                'Camera inactive',
-                                style: TextStyle(
-                                    color: Colors.white38, fontSize: 14),
-                              ),
-                              const SizedBox(height: 4),
-                              const Text(
-                                'Tap "Start Signing" to begin',
-                                style: TextStyle(
-                                    color: Colors.white24, fontSize: 12),
-                              ),
-                            ],
-                          ),
-                        ),
+                  child: _buildCameraArea(),
                 ),
 
                 // Expression badge
@@ -260,7 +274,6 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                     const SizedBox(height: 8),
                     Container(
                       width: double.infinity,
-                      
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: Colors.white,
@@ -428,5 +441,71 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       ),
     );
   }
-}
 
+  /// Builds whatever the camera area should show: loading spinner,
+  /// error message, or the real live camera feed.
+  Widget _buildCameraArea() {
+    if (_cameraError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.videocam_off, size: 60, color: Colors.white24),
+              const SizedBox(height: 12),
+              Text(
+                _cameraError!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white54, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    _cameraError = null;
+                    _initializeCameraFuture = _initCamera();
+                  });
+                },
+                icon: const Icon(Icons.refresh, color: Colors.white70),
+                label: const Text('Retry',
+                    style: TextStyle(color: Colors.white70)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Colors.white24),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return FutureBuilder<void>(
+      future: _initializeCameraFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done ||
+            _cameraController == null ||
+            !_cameraController!.value.isInitialized) {
+          return const Center(
+            child: CircularProgressIndicator(color: Colors.white38),
+          );
+        }
+
+        // Real live camera preview, filling the available area.
+        return ClipRect(
+          child: OverflowBox(
+            alignment: Alignment.center,
+            child: FittedBox(
+              fit: BoxFit.cover,
+              child: SizedBox(
+                width: _cameraController!.value.previewSize?.height ?? 1,
+                height: _cameraController!.value.previewSize?.width ?? 1,
+                child: CameraPreview(_cameraController!),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
