@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import '../../services/mediapipe_service.dart';
 
 class RecognitionScreen extends StatefulWidget {
   const RecognitionScreen({super.key});
@@ -19,10 +20,23 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   Future<void>? _initializeCameraFuture;
   String? _cameraError;
 
+  // --- MediaPipe hand detection state (Step 3b) ---
+  final MediaPipeService _mediaPipeService = MediaPipeService();
+  bool _isMediaPipeStarting = false;
+  bool _handDetected = false;
+  int _handCount = 0;
+
   @override
   void initState() {
     super.initState();
     _initializeCameraFuture = _initCamera();
+    _mediaPipeService.results.listen((result) {
+      if (!mounted) return;
+      setState(() {
+        _handDetected = result.handDetected;
+        _handCount = result.handCount;
+      });
+    });
   }
 
   Future<void> _initCamera() async {
@@ -56,6 +70,9 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       });
     } catch (e) {
       if (!mounted) return;
+      // TEMP DEBUG: print raw exception to terminal to diagnose.
+      // ignore: avoid_print
+      print('CAMERA INIT ERROR (raw): $e');
       setState(() {
         _cameraError = _friendlyCameraError(e);
       });
@@ -78,12 +95,15 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   @override
   void dispose() {
     _cameraController?.dispose();
+    _mediaPipeService.dispose();
     super.dispose();
   }
 
   // Dummy demo flow — word stream / sentence generation is still
-  // simulated for now. Real landmark-based recognition comes in Step 3b.
-  void _toggleSigning() {
+  // simulated for now. Real word/sentence output needs the trained
+  // gesture classifier (Phase 4/6). Hand *detection* (this toggle)
+  // is real, powered by MediaPipe.
+  void _toggleSigning() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Camera is not ready yet.')),
@@ -91,17 +111,36 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       return;
     }
 
-    setState(() {
-      _isSigning = !_isSigning;
-      if (!_isSigning) {
+    if (!_isSigning) {
+      // Starting: fire up MediaPipe hand detection before flipping
+      // _isSigning, so the button shows a loading state during the
+      // (first-time) model download.
+      setState(() => _isMediaPipeStarting = true);
+      final started = await _mediaPipeService.startDetection();
+      if (!mounted) return;
+      setState(() => _isMediaPipeStarting = false);
+
+      if (!started) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Hand detection could not start — camera preview will still work.'),
+          ),
+        );
+      }
+
+      setState(() => _isSigning = true);
+      _runDemoFlow();
+    } else {
+      _mediaPipeService.stopDetection();
+      setState(() {
+        _isSigning = false;
         _wordStream.clear();
         _generatedSentence = null;
         _expressionLabel = 'Neutral';
-      }
-    });
-
-    if (_isSigning) {
-      _runDemoFlow();
+        _handDetected = false;
+        _handCount = 0;
+      });
     }
   }
 
@@ -203,6 +242,41 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                                 color: Colors.white,
                                 fontSize: 12,
                                 fontWeight: FontWeight.w500),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                // Real hand-detection badge (MediaPipe)
+                if (_isSigning)
+                  Positioned(
+                    top: 20,
+                    left: 20,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: (_handDetected ? Colors.green : Colors.grey)
+                            .withOpacity(0.85),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _handDetected
+                                ? Icons.fiber_manual_record
+                                : Icons.search,
+                            color: Colors.white,
+                            size: 10,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _handDetected
+                                ? 'Hand Detected${_handCount > 1 ? " ($_handCount)" : ""}'
+                                : 'Searching for hand...',
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 12),
                           ),
                         ],
                       ),
@@ -411,12 +485,21 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: _toggleSigning,
-                        icon: Icon(
-                          _isSigning ? Icons.stop : Icons.sign_language,
-                        ),
+                        onPressed: _isMediaPipeStarting ? null : _toggleSigning,
+                        icon: _isMediaPipeStarting
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white),
+                              )
+                            : Icon(
+                                _isSigning ? Icons.stop : Icons.sign_language,
+                              ),
                         label: Text(
-                          _isSigning ? 'Stop Signing' : 'Start Signing',
+                          _isMediaPipeStarting
+                              ? 'Starting AI model...'
+                              : (_isSigning ? 'Stop Signing' : 'Start Signing'),
                           style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w600),
                         ),

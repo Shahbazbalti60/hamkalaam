@@ -31,6 +31,13 @@
 
   <title>hamkalaam</title>
   <link rel="manifest" href="manifest.json">
+
+  <!--
+    MediaPipe bridge — loads the HandLandmarker model and exposes
+    window.hamkalaamMediaPipe for Dart to call via dart:js_interop.
+    Loaded as an ES module since @mediapipe/tasks-vision is ESM-only.
+  -->
+  <script type="module" src="mediapipe_bridge.js"></script>
 </head>
 <body>
   <!--
