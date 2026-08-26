@@ -1,6 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'package:provider/provider.dart';
+import '../../services/auth_service.dart';
 import '../../services/mediapipe_service.dart';
+import '../../services/recognition_service.dart';
 
 class RecognitionScreen extends StatefulWidget {
   const RecognitionScreen({super.key});
@@ -25,6 +29,16 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   bool _isMediaPipeStarting = false;
   bool _handDetected = false;
   int _handCount = 0;
+  List<double> _latestLandmarks = [];
+  DateTime? _lastHandSeenAt;
+
+  // --- Recognition pipeline state (Phase 4) ---
+  // NOTE: hits DUMMY rule-based classifiers on the backend for now,
+  // not real trained models — see app/ai/*.py comments.
+  final RecognitionService _recognitionService = RecognitionService();
+  Timer? _classifyTimer;
+  String? _lastAddedWord;
+  bool _isGenerating = false;
 
   @override
   void initState() {
@@ -35,11 +49,24 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       setState(() {
         _handDetected = result.handDetected;
         _handCount = result.handCount;
+        _latestLandmarks = result.landmarks;
       });
+      if (result.handDetected) {
+        _lastHandSeenAt = DateTime.now();
+      }
     });
   }
 
   Future<void> _initCamera() async {
+    // Dispose any existing controller first. If a previous attempt
+    // partially acquired the camera before failing, leaving it
+    // undisposed can lock the hardware so every subsequent attempt
+    // (e.g. tapping Retry) also fails with a "camera busy" error.
+    if (_cameraController != null) {
+      await _cameraController!.dispose();
+      _cameraController = null;
+    }
+
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -70,9 +97,6 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      // TEMP DEBUG: print raw exception to terminal to diagnose.
-      // ignore: avoid_print
-      print('CAMERA INIT ERROR (raw): $e');
       setState(() {
         _cameraError = _friendlyCameraError(e);
       });
@@ -96,13 +120,17 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   void dispose() {
     _cameraController?.dispose();
     _mediaPipeService.dispose();
+    _classifyTimer?.cancel();
     super.dispose();
   }
 
-  // Dummy demo flow — word stream / sentence generation is still
-  // simulated for now. Real word/sentence output needs the trained
-  // gesture classifier (Phase 4/6). Hand *detection* (this toggle)
-  // is real, powered by MediaPipe.
+  String? get _token =>
+      Provider.of<AuthService>(context, listen: false).accessToken;
+
+  // Toggles the whole recognition flow: camera was already running
+  // from Step 3a; this starts/stops MediaPipe hand detection AND the
+  // periodic classify polling that drives the (still dummy-model-
+  // backed) word stream.
   void _toggleSigning() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -112,9 +140,6 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     }
 
     if (!_isSigning) {
-      // Starting: fire up MediaPipe hand detection before flipping
-      // _isSigning, so the button shows a loading state during the
-      // (first-time) model download.
       setState(() => _isMediaPipeStarting = true);
       final started = await _mediaPipeService.startDetection();
       if (!mounted) return;
@@ -129,45 +154,114 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
         );
       }
 
-      setState(() => _isSigning = true);
-      _runDemoFlow();
-    } else {
-      _mediaPipeService.stopDetection();
       setState(() {
-        _isSigning = false;
+        _isSigning = true;
         _wordStream.clear();
         _generatedSentence = null;
         _expressionLabel = 'Neutral';
-        _handDetected = false;
-        _handCount = 0;
+        _lastAddedWord = null;
       });
+
+      _lastHandSeenAt = DateTime.now();
+      _classifyTimer = Timer.periodic(
+        const Duration(milliseconds: 1200),
+        (_) => _pollClassify(),
+      );
+    } else {
+      _stopSigning(keepResult: false);
     }
   }
 
-  Future<void> _runDemoFlow() async {
-    // Simulate word recognition
-    await Future.delayed(const Duration(seconds: 2));
-    if (!_isSigning || !mounted) return;
+  void _stopSigning({required bool keepResult}) {
+    _classifyTimer?.cancel();
+    _classifyTimer = null;
+    _mediaPipeService.stopDetection();
     setState(() {
-      _wordStream.add('پانی');
-      _expressionLabel = 'Question';
-    });
-
-    await Future.delayed(const Duration(seconds: 2));
-    if (!_isSigning || !mounted) return;
-    setState(() => _wordStream.add('دینا'));
-
-    await Future.delayed(const Duration(seconds: 2));
-    if (!_isSigning || !mounted) return;
-    setState(() => _wordStream.add('مجھے'));
-
-    await Future.delayed(const Duration(seconds: 2));
-    if (!_isSigning || !mounted) return;
-    // Simulate pause → sentence generation
-    setState(() {
-      _generatedSentence = 'کیا آپ مجھے پانی دے سکتے ہیں؟';
       _isSigning = false;
+      _handDetected = false;
+      _handCount = 0;
+      if (!keepResult) {
+        _wordStream.clear();
+        _generatedSentence = null;
+        _expressionLabel = 'Neutral';
+      }
     });
+  }
+
+  // Called every ~1.2s while signing. Sends the latest hand landmarks
+  // to the (dummy) classifier, appends a new word if one comes back
+  // and it's different from the last word added (basic de-dupe so
+  // holding a pose doesn't spam the same word repeatedly). Also
+  // watches for a pause (no hand for 1.5s after collecting at least
+  // one word) to auto-trigger sentence generation, mirroring the
+  // original demo's "pause to generate" behavior.
+  Future<void> _pollClassify() async {
+    if (!_isSigning || _isGenerating) return;
+
+    final token = _token;
+    if (token == null) return;
+
+    // Pause detection: hand missing for a while after some words
+    // were collected → generate the sentence automatically.
+    if (_wordStream.isNotEmpty &&
+        !_handDetected &&
+        _lastHandSeenAt != null &&
+        DateTime.now().difference(_lastHandSeenAt!) >
+            const Duration(milliseconds: 1500)) {
+      await _generateSentence();
+      return;
+    }
+
+    if (!_handDetected || _latestLandmarks.isEmpty) return;
+
+    final result = await _recognitionService.classify(
+      token: token,
+      handLandmarks: _latestLandmarks,
+    );
+
+    if (!mounted || !_isSigning) return;
+
+    if (result['success'] == true) {
+      final word = result['word'] as String?;
+      final expression = result['expression'] as String? ?? 'Neutral';
+
+      setState(() => _expressionLabel = expression);
+
+      if (word != null && word != _lastAddedWord) {
+        setState(() {
+          _wordStream.add(word);
+          _lastAddedWord = word;
+        });
+      }
+    }
+  }
+
+  Future<void> _generateSentence() async {
+    final token = _token;
+    if (token == null || _wordStream.isEmpty) return;
+
+    setState(() => _isGenerating = true);
+
+    final result = await _recognitionService.generate(
+      token: token,
+      wordSequence: _wordStream,
+      expressionContext: _expressionLabel,
+    );
+
+    if (!mounted) return;
+    setState(() => _isGenerating = false);
+
+    if (result['success'] == true) {
+      setState(() => _generatedSentence = result['urdu_sentence'] as String?);
+      _stopSigning(keepResult: true);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result['message'] ?? 'Could not generate sentence'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   @override
@@ -462,6 +556,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                                         setState(() {
                                           _generatedSentence = null;
                                           _wordStream.clear();
+                                          _lastAddedWord = null;
                                         });
                                       },
                                       icon: const Icon(Icons.refresh,
@@ -485,8 +580,10 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: _isMediaPipeStarting ? null : _toggleSigning,
-                        icon: _isMediaPipeStarting
+                        onPressed: (_isMediaPipeStarting || _isGenerating)
+                            ? null
+                            : _toggleSigning,
+                        icon: (_isMediaPipeStarting || _isGenerating)
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
@@ -499,7 +596,11 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                         label: Text(
                           _isMediaPipeStarting
                               ? 'Starting AI model...'
-                              : (_isSigning ? 'Stop Signing' : 'Start Signing'),
+                              : _isGenerating
+                                  ? 'Generating sentence...'
+                                  : (_isSigning
+                                      ? 'Stop Signing'
+                                      : 'Start Signing'),
                           style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w600),
                         ),

@@ -19,7 +19,7 @@ window.hamkalaamMediaPipe = (function () {
   let running = false;
   let lastVideoTime = -1;
 
-  let latestResult = { handDetected: false, handCount: 0 };
+  let latestResult = { handDetected: false, handCount: 0, landmarks: [] };
 
   async function init() {
     if (handLandmarker) return true; // already initialized
@@ -73,7 +73,7 @@ window.hamkalaamMediaPipe = (function () {
       hiddenVideo.remove();
       hiddenVideo = null;
     }
-    latestResult = { handDetected: false, handCount: 0 };
+    latestResult = { handDetected: false, handCount: 0, landmarks: [] };
   }
 
   function detectLoop() {
@@ -88,7 +88,28 @@ window.hamkalaamMediaPipe = (function () {
       try {
         const result = handLandmarker.detectForVideo(hiddenVideo, nowMs);
         const count = result.landmarks ? result.landmarks.length : 0;
-        latestResult = { handDetected: count > 0, handCount: count };
+
+        // Flatten landmarks into a flat [x,y,z, x,y,z, ...] array,
+        // padded/truncated to a fixed shape of 2 hands x 21 points x
+        // 3 coords = 126 values, so the backend always receives a
+        // consistent-length input regardless of how many hands (0,
+        // 1, or 2) are actually visible.
+        const flat = [];
+        for (let h = 0; h < 2; h++) {
+          const hand = result.landmarks && result.landmarks[h];
+          for (let p = 0; p < 21; p++) {
+            const point = hand && hand[p];
+            flat.push(point ? point.x : 0);
+            flat.push(point ? point.y : 0);
+            flat.push(point ? point.z : 0);
+          }
+        }
+
+        latestResult = {
+          handDetected: count > 0,
+          handCount: count,
+          landmarks: flat,
+        };
       } catch (e) {
         // Swallow per-frame detection errors so the loop keeps running;
         // a single bad frame shouldn't kill the whole detection loop.

@@ -64,9 +64,11 @@ class MediaPipeService {
     try {
       final jsonStr = _jsGetLatestResult().toDart;
       final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final rawLandmarks = data['landmarks'] as List<dynamic>? ?? [];
       _controller.add(HandDetectionResult(
         handDetected: data['handDetected'] as bool? ?? false,
         handCount: (data['handCount'] as num?)?.toInt() ?? 0,
+        landmarks: rawLandmarks.map((v) => (v as num).toDouble()).toList(),
       ));
     } catch (_) {
       // A single malformed poll shouldn't break the stream.
