@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:provider/provider.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../../services/auth_service.dart';
 import '../../services/mediapipe_service.dart';
 import '../../services/recognition_service.dart';
+import '../../services/audio_service.dart';
 
 class RecognitionScreen extends StatefulWidget {
   const RecognitionScreen({super.key});
@@ -39,6 +42,11 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   Timer? _classifyTimer;
   String? _lastAddedWord;
   bool _isGenerating = false;
+
+  // --- Text-to-speech state (Phase 5) ---
+  final AudioService _audioService = AudioService();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  bool _isSpeaking = false;
 
   @override
   void initState() {
@@ -121,6 +129,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     _cameraController?.dispose();
     _mediaPipeService.dispose();
     _classifyTimer?.cancel();
+    _audioPlayer.dispose();
     super.dispose();
   }
 
@@ -258,6 +267,34 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(result['message'] ?? 'Could not generate sentence'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _playAudio() async {
+    if (_generatedSentence == null || _isSpeaking) return;
+
+    final token = _token;
+    if (token == null) return;
+
+    setState(() => _isSpeaking = true);
+
+    final result = await _audioService.speak(
+      token: token,
+      text: _generatedSentence!,
+    );
+
+    if (!mounted) return;
+    setState(() => _isSpeaking = false);
+
+    if (result['success'] == true) {
+      await _audioPlayer.play(BytesSource(result['bytes'] as Uint8List));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result['message'] ?? 'Could not play audio'),
           backgroundColor: Colors.red,
         ),
       );
@@ -526,18 +563,19 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                                   children: [
                                     Expanded(
                                       child: OutlinedButton.icon(
-                                        onPressed: () {
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            const SnackBar(
-                                              content: Text(
-                                                  'Audio — ElevenLabs TTS coming soon!'),
-                                            ),
-                                          );
-                                        },
-                                        icon: const Icon(
-                                            Icons.volume_up_outlined),
-                                        label: const Text('Play Audio'),
+                                        onPressed: _isSpeaking ? null : _playAudio,
+                                        icon: _isSpeaking
+                                            ? const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child: CircularProgressIndicator(
+                                                    strokeWidth: 2),
+                                              )
+                                            : const Icon(
+                                                Icons.volume_up_outlined),
+                                        label: Text(_isSpeaking
+                                            ? 'Loading...'
+                                            : 'Play Audio'),
                                         style: OutlinedButton.styleFrom(
                                           foregroundColor:
                                               const Color(0xFF1F3864),
