@@ -112,8 +112,6 @@ class HomeScreen extends StatelessWidget {
               icon: Icons.sign_language,
               title: 'PSL Recognition',
               subtitle: 'Real-time Pakistan Sign Language recognition',
-              tag: 'Coming Soon',
-              tagColor: Colors.orange,
               onTap: () {
                 Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const RecognitionScreen()));
@@ -126,8 +124,6 @@ class HomeScreen extends StatelessWidget {
               icon: Icons.history,
               title: 'Session History',
               subtitle: 'View your past signing sessions and generated sentences',
-              tag: 'Coming Soon',
-              tagColor: Colors.orange,
               onTap: () {
                 Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const SessionHistoryScreen()));
@@ -140,8 +136,6 @@ class HomeScreen extends StatelessWidget {
               icon: Icons.person_outline,
               title: 'My Profile',
               subtitle: 'Manage your account and preferences',
-              tag: 'Available',
-              tagColor: Colors.green,
               onTap: () {
                 Navigator.push(
                   context,
@@ -185,16 +179,12 @@ class _FeatureCard extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
-  final String tag;
-  final Color tagColor;
   final VoidCallback onTap;
 
   const _FeatureCard({
     required this.icon,
     required this.title,
     required this.subtitle,
-    required this.tag,
-    required this.tagColor,
     required this.onTap,
   });
 
@@ -234,14 +224,7 @@ class _FeatureCard extends StatelessWidget {
                 ],
               ),
             ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: tagColor.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(tag, style: TextStyle(fontSize: 11, color: tagColor, fontWeight: FontWeight.w500)),
-            ),
+            const Icon(Icons.chevron_right, color: Colors.grey, size: 20),
           ],
         ),
       ),

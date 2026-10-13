@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/admin_service.dart';
+import '../../widgets/skeleton.dart';
 
 class AdminUserManagementScreen extends StatefulWidget {
   const AdminUserManagementScreen({super.key});
@@ -199,6 +200,40 @@ class _AdminUserManagementScreenState
     );
   }
 
+  Widget _buildEmptyState() {
+    final noUsersAtAll = _users.isEmpty;
+    return RefreshIndicator(
+      onRefresh: _loadUsers,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        children: [
+          const SizedBox(height: 60),
+          Center(
+            child: Icon(Icons.person_search, size: 64, color: Colors.grey[300]),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            noUsersAtAll ? 'No users yet' : 'No users match your search',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1F3864)),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            noUsersAtAll
+                ? 'Registered users will appear here.'
+                : 'Try a different search or role filter.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final totalUsers = _users.length;
@@ -220,7 +255,7 @@ class _AdminUserManagementScreenState
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const SkeletonList()
           : _errorMessage != null
               ? Center(
                   child: Column(
@@ -322,19 +357,7 @@ class _AdminUserManagementScreenState
                     // User List
                     Expanded(
                       child: _filteredUsers.isEmpty
-                          ? Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.person_search,
-                                      size: 60, color: Colors.grey[300]),
-                                  const SizedBox(height: 12),
-                                  Text('No users found',
-                                      style:
-                                          TextStyle(color: Colors.grey[400])),
-                                ],
-                              ),
-                            )
+                          ? _buildEmptyState()
                           : RefreshIndicator(
                               onRefresh: _loadUsers,
                               child: ListView.separated(

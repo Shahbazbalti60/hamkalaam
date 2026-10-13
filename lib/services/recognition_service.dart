@@ -1,3 +1,5 @@
+import '../config/app_config.dart';
+import 'api_client.dart';
 import 'package:dio/dio.dart';
 
 /// Talks to the /api/recognition/* endpoints on the Flask backend.
@@ -9,10 +11,10 @@ import 'package:dio/dio.dart';
 /// on the Flask side. word/expression results are pipeline-shape
 /// placeholders, not accurate PSL recognition yet.
 class RecognitionService {
-  final Dio _dio = Dio();
+  final Dio _dio = ApiClient.create();
 
   // Change this to your deployed backend URL when ready
-  static const String baseUrl = 'http://127.0.0.1:5000/api/recognition';
+  static String get baseUrl => '${AppConfig.apiHost}/api/recognition';
 
   Options _authHeader(String token) {
     return Options(headers: {'Authorization': 'Bearer $token'});

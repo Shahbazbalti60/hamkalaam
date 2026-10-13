@@ -1,20 +1,35 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:jwt_decoder/jwt_decoder.dart';
+import '../config/app_config.dart';
+import 'api_client.dart';
 
 class AuthService extends ChangeNotifier {
-  final Dio _dio = Dio();
+  /// The single AuthService created by Provider. ApiClient uses this to
+  /// ask for a fresh token when a request comes back 401 (expired).
+  static AuthService? instance;
+
+  // Plain Dio (no auto-retry) for login/register/logout/renew/password.
+  final Dio _plainDio = Dio();
+  // Dio with automatic "renew token and retry once" for logged-in calls.
+  late final Dio _authedDio = ApiClient.create();
+
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
-  // Change this to your deployed backend URL when ready
-  static const String baseUrl = 'http://127.0.0.1:5000/api/auth';
+  // Change AppConfig.apiHost in lib/config/app_config.dart to switch
+  // between web (127.0.0.1) and phone (LAN IP) testing.
+  static String get baseUrl => '${AppConfig.apiHost}/api/auth';
 
   String? _accessToken;
   String? _userRole;
   String? _userName;
   String? _userEmail;
   bool _isLoading = false;
+
+  Timer? _renewTimer;
+  Future<bool>? _renewInFlight;
 
   String? get accessToken => _accessToken;
   String? get userRole => _userRole;
@@ -25,15 +40,31 @@ class AuthService extends ChangeNotifier {
   bool get isAdmin => _userRole == 'Admin';
 
   AuthService() {
+    instance = this;
     _loadToken();
+  }
+
+  @override
+  void dispose() {
+    _renewTimer?.cancel();
+    if (identical(instance, this)) instance = null;
+    super.dispose();
   }
 
   Future<void> _loadToken() async {
     try {
-      _accessToken = await _storage.read(key: 'access_token');
-      if (_accessToken != null) {
-        _extractUserInfo(_accessToken!);
-        notifyListeners();
+      final stored = await _storage.read(key: 'access_token');
+      if (stored != null) {
+        if (JwtDecoder.isExpired(stored)) {
+          // Too old to renew — throw it away so the app goes to login
+          // instead of failing on every request.
+          await _storage.delete(key: 'access_token');
+        } else {
+          _accessToken = stored;
+          _extractUserInfo(stored);
+          _startRenewTimer();
+          notifyListeners();
+        }
       }
     } catch (e) {
       _accessToken = null;
@@ -51,12 +82,62 @@ class AuthService extends ChangeNotifier {
     }
   }
 
+  // ───────────────────────── token renewal ─────────────────────────
+
+  /// Checks once a minute; when the token has under 10 minutes left,
+  /// quietly swaps it for a fresh one. Keeps the session alive for as
+  /// long as the app is open.
+  void _startRenewTimer() {
+    _renewTimer?.cancel();
+    _renewTimer = Timer.periodic(const Duration(minutes: 1), (_) async {
+      final token = _accessToken;
+      if (token == null) return;
+      try {
+        if (JwtDecoder.getRemainingTime(token) < const Duration(minutes: 10)) {
+          await renewToken();
+        }
+      } catch (_) {}
+    });
+  }
+
+  /// Exchanges the current (still valid) token for a new one.
+  /// Safe to call from several places at once — they share one request.
+  Future<bool> renewToken() {
+    if (_accessToken == null) return Future.value(false);
+    return _renewInFlight ??= _doRenew().whenComplete(() => _renewInFlight = null);
+  }
+
+  Future<bool> _doRenew() async {
+    try {
+      final response = await _plainDio.post(
+        '$baseUrl/renew',
+        options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
+      );
+      final newToken = response.data['access_token'] as String?;
+      if (response.statusCode == 200 && newToken != null) {
+        _accessToken = newToken;
+        await _storage.write(key: 'access_token', value: newToken);
+        _extractUserInfo(newToken);
+        notifyListeners();
+        return true;
+      }
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401 || e.response?.statusCode == 403) {
+        // Token is really dead (expired / account disabled) — stop trying.
+        _renewTimer?.cancel();
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  // ───────────────────────── login / register ─────────────────────────
+
   Future<Map<String, dynamic>> login(String email, String password) async {
     _isLoading = true;
     notifyListeners();
 
     try {
-      final response = await _dio.post(
+      final response = await _plainDio.post(
         '$baseUrl/login',
         data: {'email': email, 'password': password},
       );
@@ -65,6 +146,7 @@ class AuthService extends ChangeNotifier {
         _accessToken = response.data['access_token'];
         await _storage.write(key: 'access_token', value: _accessToken);
         _extractUserInfo(_accessToken!);
+        _startRenewTimer();
         _isLoading = false;
         notifyListeners();
         return {'success': true, 'role': _userRole};
@@ -91,7 +173,7 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final response = await _dio.post(
+      final response = await _plainDio.post(
         '$baseUrl/register',
         data: {
           'name': name,
@@ -125,9 +207,10 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _renewTimer?.cancel();
     try {
       if (_accessToken != null) {
-        await _dio.post(
+        await _plainDio.post(
           '$baseUrl/logout',
           options: Options(
             headers: {'Authorization': 'Bearer $_accessToken'},
@@ -146,24 +229,64 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ───────────────────────── password reset ─────────────────────────
+
+  /// Step 1: asks the server to e-mail a 6-digit code.
   Future<Map<String, dynamic>> forgotPassword(String email) async {
     try {
-      final response = await _dio.post(
-        '$baseUrl/forgot-password',
+      final response = await _plainDio.post(
+        '$baseUrl/password/forgot',
         data: {'email': email},
       );
       if (response.statusCode == 200) {
         return {'success': true};
       }
-    } on DioException {
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      if (data is Map && data['error'] != null) {
+        return {'success': false, 'message': data['error'].toString()};
+      }
       return {'success': false, 'message': 'Cannot connect to server'};
     }
     return {'success': false, 'message': 'Something went wrong'};
   }
 
+  /// Step 2: checks the code and sets the new password.
+  Future<Map<String, dynamic>> resetPassword({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) async {
+    try {
+      final response = await _plainDio.post(
+        '$baseUrl/password/reset',
+        data: {'email': email, 'code': code, 'new_password': newPassword},
+      );
+      if (response.statusCode == 200) {
+        return {'success': true};
+      }
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      if (data is Map && data['details'] is Map) {
+        // Validation problem (e.g. password too short) — show the first reason.
+        final details = data['details'] as Map;
+        final first = details.values.first;
+        final text = first is List && first.isNotEmpty ? first.first : first;
+        return {'success': false, 'message': text.toString()};
+      }
+      if (data is Map && data['error'] != null) {
+        return {'success': false, 'message': data['error'].toString()};
+      }
+      return {'success': false, 'message': 'Cannot connect to server'};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
+  // ───────────────────────── profile ─────────────────────────
+
   Future<Map<String, dynamic>> updateProfile(String name) async {
     try {
-      final response = await _dio.put(
+      final response = await _authedDio.put(
         '$baseUrl/profile',
         data: {'name': name},
         options: Options(
@@ -175,7 +298,13 @@ class AuthService extends ChangeNotifier {
         notifyListeners();
         return {'success': true};
       }
-    } on DioException {
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401) {
+        return {
+          'success': false,
+          'message': 'Session expired, please log in again'
+        };
+      }
       return {'success': false, 'message': 'Cannot connect to server'};
     }
     return {'success': false, 'message': 'Something went wrong'};

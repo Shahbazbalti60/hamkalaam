@@ -1,13 +1,15 @@
+import '../config/app_config.dart';
+import 'api_client.dart';
 import 'package:dio/dio.dart';
 
 /// Talks to the /api/admin/* endpoints on the Flask backend.
 /// Mirrors the style of AuthService/DatasetService: caller passes the
 /// JWT in, this class does not store or manage the token itself.
 class AdminService {
-  final Dio _dio = Dio();
+  final Dio _dio = ApiClient.create();
 
   // Change this to your deployed backend URL when ready
-  static const String baseUrl = 'http://127.0.0.1:5000/api/admin';
+  static String get baseUrl => '${AppConfig.apiHost}/api/admin';
 
   Options _authHeader(String token) {
     return Options(headers: {'Authorization': 'Bearer $token'});

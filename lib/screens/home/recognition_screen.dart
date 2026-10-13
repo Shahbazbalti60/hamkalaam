@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import 'package:audioplayers/audioplayers.dart';
 import '../../services/auth_service.dart';
 import '../../services/mediapipe_service.dart';
+import '../../services/camera_helper.dart';
 import '../../services/recognition_service.dart';
 import '../../services/audio_service.dart';
 
@@ -26,12 +27,18 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   CameraController? _cameraController;
   Future<void>? _initializeCameraFuture;
   String? _cameraError;
+  String _cameraStatus = 'Starting camera...';
 
   // --- MediaPipe hand detection state (Step 3b) ---
   final MediaPipeService _mediaPipeService = MediaPipeService();
   bool _isMediaPipeStarting = false;
   bool _handDetected = false;
   int _handCount = 0;
+  // Hand-tracking model warm-up status (shown in the bottom-left badge).
+  bool _aiChecked = false;
+  bool _aiReady = false;
+  // Last recognition error shown, so the same error isn't spammed.
+  String? _lastShownError;
   List<double> _latestLandmarks = [];
   DateTime? _lastHandSeenAt;
 
@@ -66,49 +73,63 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   }
 
   Future<void> _initCamera() async {
-    // Dispose any existing controller first. If a previous attempt
-    // partially acquired the camera before failing, leaving it
-    // undisposed can lock the hardware so every subsequent attempt
-    // (e.g. tapping Retry) also fails with a "camera busy" error.
     if (_cameraController != null) {
       await _cameraController!.dispose();
       _cameraController = null;
     }
+    if (mounted) {
+      setState(() {
+        _cameraError = null;
+        _cameraStatus = 'Starting camera...';
+      });
+    }
 
     try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        setState(() => _cameraError = 'No camera found on this device.');
+      final controller = await CameraHelper.openFrontCamera(
+        onAttempt: (attempt, max) {
+          if (!mounted) return;
+          setState(() {
+            _cameraStatus = attempt == 1
+                ? 'Starting camera...'
+                : 'Camera is waking up... (try $attempt of $max)';
+          });
+        },
+        isCancelled: () => !mounted,
+      );
+
+      if (controller == null) return;
+      if (!mounted) {
+        await controller.dispose();
         return;
       }
-
-      // Prefer the front camera (selfie-style) since the person signs
-      // facing their own device, same as a video call.
-      final selectedCamera = cameras.firstWhere(
-        (cam) => cam.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
-      );
-
-      final controller = CameraController(
-        selectedCamera,
-        ResolutionPreset.medium,
-        enableAudio: false,
-      );
-
-      await controller.initialize();
-
-      if (!mounted) return;
 
       setState(() {
         _cameraController = controller;
         _cameraError = null;
       });
+
+      // Load the hand-tracking model only AFTER the camera is up, so the
+      // two heavy start-ups don't compete with each other.
+      _warmUpAi();
+    } on NoCameraException {
+      if (!mounted) return;
+      setState(() => _cameraError = 'No camera found on this device.');
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _cameraError = _friendlyCameraError(e);
-      });
+      setState(() => _cameraError = _friendlyCameraError(e));
     }
+  }
+
+  /// Downloads/prepares the hand-tracking model so it is already warm
+  /// when "Start Signing" is tapped. Runs once.
+  Future<void> _warmUpAi() async {
+    if (_aiChecked) return;
+    final ok = await _mediaPipeService.init();
+    if (!mounted) return;
+    setState(() {
+      _aiChecked = true;
+      _aiReady = ok;
+    });
   }
 
   String _friendlyCameraError(Object e) {
@@ -236,11 +257,24 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
       setState(() => _expressionLabel = expression);
 
+      _lastShownError = null;
+
       if (word != null && word != _lastAddedWord) {
         setState(() {
           _wordStream.add(word);
           _lastAddedWord = word;
         });
+      }
+    } else {
+      // Previously a failed request was ignored silently, which looked
+      // like "the app does nothing". Tell the person what went wrong.
+      final message =
+          result['message'] as String? ?? 'Recognition request failed';
+      if (message != _lastShownError) {
+        _lastShownError = message;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message), backgroundColor: Colors.red),
+        );
       }
     }
   }
@@ -431,13 +465,17 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                           width: 8,
                           height: 8,
                           decoration: BoxDecoration(
-                            color: _isSigning ? Colors.green : Colors.grey,
+                            color: (_isSigning || _aiReady) ? Colors.green : Colors.grey,
                             shape: BoxShape.circle,
                           ),
                         ),
                         const SizedBox(width: 6),
                         Text(
-                          _isSigning ? 'AI Active' : 'AI Standby',
+                          _isSigning
+                              ? 'AI Active'
+                              : (!_aiChecked
+                                  ? 'AI Loading...'
+                                  : (_aiReady ? 'AI Ready' : 'AI Standby')),
                           style: const TextStyle(
                               color: Colors.white70, fontSize: 11),
                         ),
@@ -708,8 +746,18 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
         if (snapshot.connectionState != ConnectionState.done ||
             _cameraController == null ||
             !_cameraController!.value.isInitialized) {
-          return const Center(
-            child: CircularProgressIndicator(color: Colors.white38),
+          return Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(color: Colors.white38),
+                const SizedBox(height: 14),
+                Text(
+                  _cameraStatus,
+                  style: const TextStyle(color: Colors.white54, fontSize: 13),
+                ),
+              ],
+            ),
           );
         }
 

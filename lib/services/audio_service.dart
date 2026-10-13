@@ -1,3 +1,5 @@
+import '../config/app_config.dart';
+import 'api_client.dart';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 
@@ -5,10 +7,10 @@ import 'package:dio/dio.dart';
 /// securely proxies ElevenLabs (API key stays server-side). Returns
 /// raw MP3 bytes ready to hand to an AudioPlayer.
 class AudioService {
-  final Dio _dio = Dio();
+  final Dio _dio = ApiClient.create();
 
   // Change this to your deployed backend URL when ready
-  static const String baseUrl = 'http://127.0.0.1:5000/api/audio';
+  static String get baseUrl => '${AppConfig.apiHost}/api/audio';
 
   /// Returns {'success': true, 'bytes': Uint8List} or
   /// {'success': false, 'message': String}.

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        Android 9+ blocks plain HTTP ("cleartext") by default. This
+        allows it ONLY for the laptop's LAN IP (running the Flask
+        backend), not for any other domain — everything else stays
+        blocked, which is the safer default.
+
+        If your laptop's IP changes (check with `ipconfig`), update
+        the domain value below AND lib/config/app_config.dart to match.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">192.168.100.58</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false"/>
+</network-security-config>

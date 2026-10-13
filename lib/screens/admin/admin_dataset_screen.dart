@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/dataset_service.dart';
+import '../../widgets/skeleton.dart';
+import 'sample_capture_screen.dart';
 
 class AdminDatasetScreen extends StatefulWidget {
   const AdminDatasetScreen({super.key});
@@ -261,6 +263,9 @@ class _AdminDatasetScreenState extends State<AdminDatasetScreen> {
   }
 
   void _showWordDetails(Map<String, dynamic> word) {
+    // The screen's own context (the sheet's builder context below is
+    // thrown away when the sheet closes).
+    final parentContext = context;
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -332,17 +337,24 @@ class _AdminDatasetScreenState extends State<AdminDatasetScreen> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: () {
+                onPressed: () async {
                   Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text(
-                            'Video capture — coming when camera is integrated!'),
-                        backgroundColor: Color(0xFF1F3864)),
+                  await Navigator.push(
+                    parentContext,
+                    MaterialPageRoute(
+                      builder: (_) => SampleCaptureScreen(
+                        wordId: word['id'] as int,
+                        urduWord: word['word'] as String,
+                        gloss: word['gloss'] as String,
+                        initialSampleCount: word['samples'] as int,
+                      ),
+                    ),
                   );
+                  // Refresh counts after coming back from recording.
+                  if (mounted) _loadWords();
                 },
                 icon: const Icon(Icons.videocam),
-                label: const Text('Capture Sample Video'),
+                label: const Text('Record Sample Videos'),
                 style: ElevatedButton.styleFrom(
                     minimumSize: const Size(double.infinity, 48),
                     shape: RoundedRectangleBorder(
@@ -369,6 +381,60 @@ class _AdminDatasetScreenState extends State<AdminDatasetScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// Friendly empty state. Different message when the dataset has no
+  /// words at all vs. when a search/filter simply matches nothing.
+  Widget _buildEmptyState() {
+    final noWordsAtAll = _words.isEmpty;
+    return RefreshIndicator(
+      onRefresh: _loadWords,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        children: [
+          const SizedBox(height: 60),
+          Center(
+            child: Icon(
+              noWordsAtAll ? Icons.library_add_outlined : Icons.search_off,
+              size: 64,
+              color: Colors.grey[300],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            noWordsAtAll ? 'No words yet' : 'No words match your search',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF1F3864)),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            noWordsAtAll
+                ? 'Add your first PSL word to start building the dataset.'
+                : 'Try a different search or domain filter.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey[500], fontSize: 13),
+          ),
+          if (noWordsAtAll) ...[
+            const SizedBox(height: 18),
+            Center(
+              child: ElevatedButton.icon(
+                onPressed: _showAddWordDialog,
+                icon: const Icon(Icons.add),
+                label: const Text('Add your first word'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1F3864),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -405,7 +471,7 @@ class _AdminDatasetScreenState extends State<AdminDatasetScreen> {
                   const Text('Add Word', style: TextStyle(color: Colors.white)),
             ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const SkeletonList()
           : _errorMessage != null
               ? Center(
                   child: Column(
@@ -549,19 +615,7 @@ class _AdminDatasetScreenState extends State<AdminDatasetScreen> {
                     const SizedBox(height: 10),
                     Expanded(
                       child: _filteredWords.isEmpty
-                          ? Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.search_off,
-                                      size: 60, color: Colors.grey[300]),
-                                  const SizedBox(height: 12),
-                                  Text('No words found',
-                                      style:
-                                          TextStyle(color: Colors.grey[400])),
-                                ],
-                              ),
-                            )
+                          ? _buildEmptyState()
                           : RefreshIndicator(
                               onRefresh: _loadWords,
                               child: ListView.separated(

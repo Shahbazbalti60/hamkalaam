@@ -1,13 +1,56 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
+import '../../services/dataset_service.dart';
 import '../auth/login_screen.dart';
 import '../admin/admin_user_management_screen.dart';
 import '../admin/admin_dataset_screen.dart';
 import 'profile_screen.dart';
 
-class AdminHomeScreen extends StatelessWidget {
+class AdminHomeScreen extends StatefulWidget {
   const AdminHomeScreen({super.key});
+
+  @override
+  State<AdminHomeScreen> createState() => _AdminHomeScreenState();
+}
+
+class _AdminHomeScreenState extends State<AdminHomeScreen> {
+  final DatasetService _datasetService = DatasetService();
+
+  bool _isLoadingStats = true;
+  int _totalWords = 0;
+  int _totalSamples = 0;
+  int _underSampled = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadStats());
+  }
+
+  Future<void> _loadStats() async {
+    final token = Provider.of<AuthService>(context, listen: false).accessToken;
+    if (token == null) {
+      setState(() => _isLoadingStats = false);
+      return;
+    }
+
+    final result = await _datasetService.getStatistics(token);
+
+    if (!mounted) return;
+
+    if (result['success'] == true) {
+      final stats = result['stats'] as Map<String, dynamic>;
+      setState(() {
+        _totalWords = (stats['total_words'] as num?)?.toInt() ?? 0;
+        _totalSamples = (stats['total_samples'] as num?)?.toInt() ?? 0;
+        _underSampled = (stats['words_under_target'] as num?)?.toInt() ?? 0;
+        _isLoadingStats = false;
+      });
+    } else {
+      setState(() => _isLoadingStats = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -34,21 +77,19 @@ class AdminHomeScreen extends StatelessWidget {
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Admin welcome card — tapping it opens the profile too, since
-            // it's the most natural "this is you" element on the dashboard.
-            GestureDetector(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                );
-              },
-              child: Container(
+      body: RefreshIndicator(
+        onRefresh: _loadStats,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Admin welcome card — informational only. Profile is
+              // reached via the dedicated "My Profile" action card
+              // below, not by tapping this card (avoids two paths to
+              // the same destination).
+              Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
@@ -93,7 +134,6 @@ class AdminHomeScreen extends StatelessWidget {
                             ],
                           ),
                         ),
-                        Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.7)),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -104,124 +144,132 @@ class AdminHomeScreen extends StatelessWidget {
                   ],
                 ),
               ),
-            ),
 
-            const SizedBox(height: 28),
+              const SizedBox(height: 28),
 
-            // Dataset stats row
-            const Text('Dataset Overview', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1F3864))),
-            const SizedBox(height: 14),
-
-            Row(
-              children: [
-                Expanded(child: _StatCard(label: 'Total Words', value: '0', icon: Icons.text_fields, color: Colors.blue)),
-                const SizedBox(width: 12),
-                Expanded(child: _StatCard(label: 'Total Samples', value: '0', icon: Icons.video_library_outlined, color: Colors.green)),
-                const SizedBox(width: 12),
-                Expanded(child: _StatCard(label: 'Under-sampled', value: '0', icon: Icons.warning_amber_outlined, color: Colors.orange)),
-              ],
-            ),
-
-            const SizedBox(height: 24),
-
-            const Text('Admin Actions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1F3864))),
-            const SizedBox(height: 14),
-
-            _AdminActionCard(
-              icon: Icons.video_camera_back_outlined,
-              title: 'Dataset Management',
-              subtitle: 'Capture PSL gesture videos, add words, manage samples',
-              tag: 'Active',
-              tagColor: Colors.green,
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const AdminDatasetScreen()),
-                );
-              },
-            ),
-
-            const SizedBox(height: 12),
-
-            _AdminActionCard(
-              icon: Icons.people_outline,
-              title: 'User Management',
-              subtitle: 'View registered users, manage roles and accounts',
-              tag: 'Active',
-              tagColor: Colors.green,
-              onTap: () {
-                Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const AdminUserManagementScreen()));
-              },
-            ),
-
-            const SizedBox(height: 12),
-
-            _AdminActionCard(
-              icon: Icons.person_outline,
-              title: 'My Profile',
-              subtitle: 'Manage your account and preferences',
-              tag: 'Active',
-              tagColor: Colors.green,
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const ProfileScreen()),
-                );
-              },
-            ),
-
-            const SizedBox(height: 12),
-
-            _AdminActionCard(
-              icon: Icons.model_training,
-              title: 'Model Management',
-              subtitle: 'Monitor AI model status and trigger retraining',
-              tag: 'Coming Soon',
-              tagColor: Colors.orange,
-              onTap: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Model Management — available after dataset collection.')),
-                );
-              },
-            ),
-
-            const SizedBox(height: 12),
-
-            _AdminActionCard(
-              icon: Icons.analytics_outlined,
-              title: 'System Statistics',
-              subtitle: 'View recognition accuracy, session logs, and system health',
-              tag: 'Coming Soon',
-              tagColor: Colors.orange,
-              onTap: () {},
-            ),
-
-            const SizedBox(height: 24),
-
-            // Info banner
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.amber[50],
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.amber[200]!),
-              ),
-              child: Row(
+              // Dataset stats row — real data from /api/dataset/statistics
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Icon(Icons.info_outline, color: Colors.amber[800], size: 22),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Dataset collection is the current priority. Capture at least 50 samples per word for all 100 target words before model training begins.',
-                      style: TextStyle(color: Colors.amber[900], fontSize: 13, height: 1.5),
+                  const Text('Dataset Overview', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1F3864))),
+                  if (_isLoadingStats)
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
                     ),
-                  ),
                 ],
               ),
-            ),
-          ],
+              const SizedBox(height: 14),
+
+              Row(
+                children: [
+                  Expanded(child: _StatCard(label: 'Total Words', value: '$_totalWords', icon: Icons.text_fields, color: Colors.blue)),
+                  const SizedBox(width: 12),
+                  Expanded(child: _StatCard(label: 'Total Samples', value: '$_totalSamples', icon: Icons.video_library_outlined, color: Colors.green)),
+                  const SizedBox(width: 12),
+                  Expanded(child: _StatCard(label: 'Under-sampled', value: '$_underSampled', icon: Icons.warning_amber_outlined, color: Colors.orange)),
+                ],
+              ),
+
+              const SizedBox(height: 24),
+
+              const Text('Admin Actions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF1F3864))),
+              const SizedBox(height: 14),
+
+              _AdminActionCard(
+                icon: Icons.video_camera_back_outlined,
+                title: 'Dataset Management',
+                subtitle: 'Capture PSL gesture videos, add words, manage samples',
+                onTap: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AdminDatasetScreen()),
+                  );
+                  // Refresh stats in case words were added/deleted
+                  // while the person was on that screen.
+                  _loadStats();
+                },
+              ),
+
+              const SizedBox(height: 12),
+
+              _AdminActionCard(
+                icon: Icons.people_outline,
+                title: 'User Management',
+                subtitle: 'View registered users, manage roles and accounts',
+                onTap: () {
+                  Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const AdminUserManagementScreen()));
+                },
+              ),
+
+              const SizedBox(height: 12),
+
+              _AdminActionCard(
+                icon: Icons.person_outline,
+                title: 'My Profile',
+                subtitle: 'Manage your account and preferences',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                  );
+                },
+              ),
+
+              const SizedBox(height: 12),
+
+              _AdminActionCard(
+                icon: Icons.model_training,
+                title: 'Model Management',
+                subtitle: 'Monitor AI model status and trigger retraining',
+                onTap: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Model Management — available after dataset collection.')),
+                  );
+                },
+              ),
+
+              const SizedBox(height: 12),
+
+              _AdminActionCard(
+                icon: Icons.analytics_outlined,
+                title: 'System Statistics',
+                subtitle: 'View recognition accuracy, session logs, and system health',
+                onTap: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('System Statistics — coming soon.')),
+                  );
+                },
+              ),
+
+              const SizedBox(height: 24),
+
+              // Info banner
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.amber[50],
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: Colors.amber[200]!),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.amber[800], size: 22),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Dataset collection is the current priority. Capture at least 50 samples per word for all 100 target words before model training begins.',
+                        style: TextStyle(color: Colors.amber[900], fontSize: 13, height: 1.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -263,11 +311,9 @@ class _AdminActionCard extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
-  final String tag;
-  final Color tagColor;
   final VoidCallback onTap;
 
-  const _AdminActionCard({required this.icon, required this.title, required this.subtitle, required this.tag, required this.tagColor, required this.onTap});
+  const _AdminActionCard({required this.icon, required this.title, required this.subtitle, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -304,14 +350,7 @@ class _AdminActionCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: tagColor.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(tag, style: TextStyle(fontSize: 11, color: tagColor, fontWeight: FontWeight.w500)),
-            ),
+            const Icon(Icons.chevron_right, color: Colors.grey, size: 20),
           ],
         ),
       ),

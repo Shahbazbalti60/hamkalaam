@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/session_service.dart';
+import '../../widgets/skeleton.dart';
 
 class SessionHistoryScreen extends StatefulWidget {
   const SessionHistoryScreen({super.key});
@@ -125,11 +126,22 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? const SkeletonList(itemHeight: 70)
           : _errorMessage != null
               ? _buildErrorState()
               : _sessions.isEmpty
-                  ? _buildEmptyState()
+                  ? RefreshIndicator(
+                      onRefresh: _loadHistory,
+                      child: ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        children: [
+                          SizedBox(
+                              height:
+                                  MediaQuery.of(context).size.height * 0.22),
+                          _buildEmptyState(),
+                        ],
+                      ),
+                    )
                   : RefreshIndicator(
                       onRefresh: _loadHistory,
                       child: ListView.builder(
