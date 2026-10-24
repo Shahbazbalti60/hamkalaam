@@ -21,6 +21,14 @@ class MediaPipeService {
     return HandWindow.empty;
   }
 
+  void startContinuous() {}
+
+  void stopContinuous() {}
+
+  SegmentStatus getSegmentStatus() => SegmentStatus.idle;
+
+  HandWindow? popSegment() => null;
+
   void stopDetection() {}
 
   void dispose() {

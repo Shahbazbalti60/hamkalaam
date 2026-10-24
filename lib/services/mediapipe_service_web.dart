@@ -23,6 +23,18 @@ external void _jsStartWindow();
 @JS('hamkalaamMediaPipe.stopWindow')
 external JSString _jsStopWindow();
 
+@JS('hamkalaamMediaPipe.startContinuous')
+external void _jsStartContinuous();
+
+@JS('hamkalaamMediaPipe.stopContinuous')
+external void _jsStopContinuous();
+
+@JS('hamkalaamMediaPipe.popSegment')
+external JSString _jsPopSegment();
+
+@JS('hamkalaamMediaPipe.getSegmentStatus')
+external JSString _jsGetSegmentStatus();
+
 /// Web implementation - talks to web/mediapipe_bridge.js.
 ///
 /// The JS side runs its own independent hidden camera stream and
@@ -104,6 +116,59 @@ class MediaPipeService {
       );
     } catch (_) {
       return HandWindow.empty;
+    }
+  }
+
+  // ---- automatic (continuous) mode ---------------------------------
+
+  /// Starts cutting the live camera stream into one segment per word.
+  /// Detection must already be running ([startDetection]).
+  void startContinuous() {
+    try {
+      _jsStartContinuous();
+    } catch (_) {}
+  }
+
+  void stopContinuous() {
+    try {
+      _jsStopContinuous();
+    } catch (_) {}
+  }
+
+  SegmentStatus getSegmentStatus() {
+    try {
+      final data =
+          jsonDecode(_jsGetSegmentStatus().toDart) as Map<String, dynamic>;
+      return SegmentStatus(
+        state: data['state'] as String? ?? 'idle',
+        queued: (data['queued'] as num?)?.toInt() ?? 0,
+        msSinceHand: (data['msSinceHand'] as num?)?.toInt() ?? 0,
+        discarded: (data['discarded'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return SegmentStatus.idle;
+    }
+  }
+
+  /// Oldest finished word segment (60 x 126), or null if none is waiting.
+  HandWindow? popSegment() {
+    try {
+      final jsonStr = _jsPopSegment().toDart;
+      if (jsonStr.isEmpty) return null;
+      final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final raw = data['frames'] as List<dynamic>? ?? [];
+      final frames = raw
+          .map((f) =>
+              (f as List<dynamic>).map((v) => (v as num).toDouble()).toList())
+          .toList();
+      return HandWindow(
+        frames: frames,
+        handFrames: (data['handFrames'] as num?)?.toInt() ?? 0,
+        rawCount: (data['rawCount'] as num?)?.toInt() ?? 0,
+        durationMs: (data['durationMs'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
     }
   }
 

@@ -4,11 +4,19 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:provider/provider.dart';
 import 'package:audioplayers/audioplayers.dart';
+import '../../data/psl_words_ur.dart';
 import '../../services/auth_service.dart';
 import '../../services/mediapipe_service.dart';
+import '../../services/hand_window.dart';
 import '../../services/camera_helper.dart';
 import '../../services/recognition_service.dart';
 import '../../services/audio_service.dart';
+
+class _Guess {
+  final String word; // model label (English key)
+  final double confidence;
+  const _Guess(this.word, this.confidence);
+}
 
 class RecognitionScreen extends StatefulWidget {
   const RecognitionScreen({super.key});
@@ -18,39 +26,51 @@ class RecognitionScreen extends StatefulWidget {
 }
 
 class _RecognitionScreenState extends State<RecognitionScreen> {
-  bool _isSigning = false;
+  static const Color _navy = Color(0xFF1F3864);
+
+  /// No hand for this long after at least one word = the sentence is over.
+  static const int _sentencePauseMs = 2000;
+
+  /// Nobody signed anything for this long = stop listening.
+  static const int _idleTimeoutMs = 20000;
+
+  // --- session state ---
+  bool _listening = false;
+  bool _isStarting = false;
+  bool _signingNow = false; // a word is being captured right now
+  bool _classifying = false;
+  bool _finishing = false; // building / speaking the sentence
+  bool _ticking = false;
+  Timer? _tickTimer;
   String _expressionLabel = 'Neutral';
+
+  /// Model labels (English keys). Shown to the user as Urdu via [_urdu].
   final List<String> _wordStream = [];
   String? _generatedSentence;
 
-  // --- Camera state (Step 3a: real live preview) ---
+  // --- last result message ---
+  String? _resultMessage;
+  bool _resultIsGood = false;
+  List<_Guess> _suggestions = [];
+
+  // --- Camera ---
   CameraController? _cameraController;
   Future<void>? _initializeCameraFuture;
   String? _cameraError;
   String _cameraStatus = 'Starting camera...';
 
-  // --- MediaPipe hand detection state (Step 3b) ---
+  // --- MediaPipe ---
   final MediaPipeService _mediaPipeService = MediaPipeService();
-  bool _isMediaPipeStarting = false;
+  StreamSubscription? _handSub;
   bool _handDetected = false;
   int _handCount = 0;
-  // Hand-tracking model warm-up status (shown in the bottom-left badge).
   bool _aiChecked = false;
   bool _aiReady = false;
-  // Last recognition error shown, so the same error isn't spammed.
-  String? _lastShownError;
-  List<double> _latestLandmarks = [];
-  DateTime? _lastHandSeenAt;
+  bool _modelChecked = false;
+  bool _modelReady = false;
 
-  // --- Recognition pipeline state (Phase 4) ---
-  // NOTE: hits DUMMY rule-based classifiers on the backend for now,
-  // not real trained models — see app/ai/*.py comments.
+  // --- Services ---
   final RecognitionService _recognitionService = RecognitionService();
-  Timer? _classifyTimer;
-  String? _lastAddedWord;
-  bool _isGenerating = false;
-
-  // --- Text-to-speech state (Phase 5) ---
   final AudioService _audioService = AudioService();
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isSpeaking = false;
@@ -59,18 +79,19 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   void initState() {
     super.initState();
     _initializeCameraFuture = _initCamera();
-    _mediaPipeService.results.listen((result) {
+    _handSub = _mediaPipeService.results.listen((result) {
       if (!mounted) return;
-      setState(() {
-        _handDetected = result.handDetected;
-        _handCount = result.handCount;
-        _latestLandmarks = result.landmarks;
-      });
-      if (result.handDetected) {
-        _lastHandSeenAt = DateTime.now();
+      if (result.handDetected != _handDetected ||
+          result.handCount != _handCount) {
+        setState(() {
+          _handDetected = result.handDetected;
+          _handCount = result.handCount;
+        });
       }
     });
   }
+
+  String _urdu(String label) => pslUrdu[label] ?? label;
 
   Future<void> _initCamera() async {
     if (_cameraController != null) {
@@ -108,8 +129,6 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
         _cameraError = null;
       });
 
-      // Load the hand-tracking model only AFTER the camera is up, so the
-      // two heavy start-ups don't compete with each other.
       _warmUpAi();
     } on NoCameraException {
       if (!mounted) return;
@@ -120,16 +139,30 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     }
   }
 
-  /// Downloads/prepares the hand-tracking model so it is already warm
-  /// when "Start Signing" is tapped. Runs once.
+  /// Loads the browser hand model AND the server LSTM before first use.
   Future<void> _warmUpAi() async {
-    if (_aiChecked) return;
-    final ok = await _mediaPipeService.init();
-    if (!mounted) return;
-    setState(() {
-      _aiChecked = true;
-      _aiReady = ok;
+    if (_aiChecked && _modelChecked) return;
+    final token = _token;
+
+    final hand = _mediaPipeService.init().then((ok) {
+      if (!mounted) return;
+      setState(() {
+        _aiChecked = true;
+        _aiReady = ok;
+      });
     });
+
+    final server = () async {
+      if (token == null) return;
+      final status = await _recognitionService.modelStatus(token: token);
+      if (!mounted) return;
+      setState(() {
+        _modelChecked = true;
+        _modelReady = status['success'] == true && status['ready'] == true;
+      });
+    }();
+
+    await Future.wait([hand, server]);
   }
 
   String _friendlyCameraError(Object e) {
@@ -147,9 +180,11 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
   @override
   void dispose() {
+    _tickTimer?.cancel();
+    _handSub?.cancel();
     _cameraController?.dispose();
+    _mediaPipeService.stopContinuous();
     _mediaPipeService.dispose();
-    _classifyTimer?.cancel();
     _audioPlayer.dispose();
     super.dispose();
   }
@@ -157,182 +192,262 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   String? get _token =>
       Provider.of<AuthService>(context, listen: false).accessToken;
 
-  // Toggles the whole recognition flow: camera was already running
-  // from Step 3a; this starts/stops MediaPipe hand detection AND the
-  // periodic classify polling that drives the (still dummy-model-
-  // backed) word stream.
-  void _toggleSigning() async {
+  void _toast(String message, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: error ? Colors.red : null,
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Listening (automatic mode)
+  // ------------------------------------------------------------------
+
+  Future<void> _startListening() async {
+    if (_listening || _isStarting || _finishing) return;
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Camera is not ready yet.')),
-      );
+      _toast('Camera is not ready yet.');
+      return;
+    }
+    if (_token == null) {
+      _toast('Please log in again.', error: true);
       return;
     }
 
-    if (!_isSigning) {
-      setState(() => _isMediaPipeStarting = true);
-      final started = await _mediaPipeService.startDetection();
-      if (!mounted) return;
-      setState(() => _isMediaPipeStarting = false);
+    setState(() => _isStarting = true);
+    final started = await _mediaPipeService.startDetection();
+    if (!mounted) return;
+    setState(() => _isStarting = false);
 
-      if (!started) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-                'Hand detection could not start — camera preview will still work.'),
-          ),
-        );
-      }
-
-      setState(() {
-        _isSigning = true;
-        _wordStream.clear();
-        _generatedSentence = null;
-        _expressionLabel = 'Neutral';
-        _lastAddedWord = null;
-      });
-
-      _lastHandSeenAt = DateTime.now();
-      _classifyTimer = Timer.periodic(
-        const Duration(milliseconds: 1200),
-        (_) => _pollClassify(),
-      );
-    } else {
-      _stopSigning(keepResult: false);
+    if (!started) {
+      _toast(
+          'Hand detection could not start. It works in Chrome on a computer.',
+          error: true);
+      return;
     }
+
+    _mediaPipeService.startContinuous();
+    setState(() {
+      _listening = true;
+      _signingNow = false;
+      _classifying = false;
+      _wordStream.clear();
+      _generatedSentence = null;
+      _expressionLabel = 'Neutral';
+      _resultMessage = null;
+      _suggestions = [];
+    });
+
+    _tickTimer?.cancel();
+    _tickTimer =
+        Timer.periodic(const Duration(milliseconds: 150), (_) => _tick());
   }
 
-  void _stopSigning({required bool keepResult}) {
-    _classifyTimer?.cancel();
-    _classifyTimer = null;
+  void _stopListening({required bool keepResult}) {
+    _tickTimer?.cancel();
+    _tickTimer = null;
+    _mediaPipeService.stopContinuous();
     _mediaPipeService.stopDetection();
+    if (!mounted) return;
     setState(() {
-      _isSigning = false;
+      _listening = false;
+      _signingNow = false;
+      _classifying = false;
       _handDetected = false;
       _handCount = 0;
       if (!keepResult) {
         _wordStream.clear();
         _generatedSentence = null;
         _expressionLabel = 'Neutral';
+        _resultMessage = null;
+        _suggestions = [];
       }
     });
   }
 
-  // Called every ~1.2s while signing. Sends the latest hand landmarks
-  // to the (dummy) classifier, appends a new word if one comes back
-  // and it's different from the last word added (basic de-dupe so
-  // holding a pose doesn't spam the same word repeatedly). Also
-  // watches for a pause (no hand for 1.5s after collecting at least
-  // one word) to auto-trigger sentence generation, mirroring the
-  // original demo's "pause to generate" behavior.
-  Future<void> _pollClassify() async {
-    if (!_isSigning || _isGenerating) return;
-
-    final token = _token;
-    if (token == null) return;
-
-    // Pause detection: hand missing for a while after some words
-    // were collected → generate the sentence automatically.
-    if (_wordStream.isNotEmpty &&
-        !_handDetected &&
-        _lastHandSeenAt != null &&
-        DateTime.now().difference(_lastHandSeenAt!) >
-            const Duration(milliseconds: 1500)) {
-      await _generateSentence();
-      return;
-    }
-
-    if (!_handDetected || _latestLandmarks.isEmpty) return;
-
-    final result = await _recognitionService.classify(
-      token: token,
-      handLandmarks: _latestLandmarks,
-    );
-
-    if (!mounted || !_isSigning) return;
-
-    if (result['success'] == true) {
-      final word = result['word'] as String?;
-      final expression = result['expression'] as String? ?? 'Neutral';
-
-      setState(() => _expressionLabel = expression);
-
-      _lastShownError = null;
-
-      if (word != null && word != _lastAddedWord) {
-        setState(() {
-          _wordStream.add(word);
-          _lastAddedWord = word;
-        });
+  /// Runs every 150 ms while listening:
+  /// 1) classify any finished word, 2) decide whether the sentence is over.
+  Future<void> _tick() async {
+    if (!_listening || _ticking || _finishing) return;
+    _ticking = true;
+    try {
+      final status = _mediaPipeService.getSegmentStatus();
+      if (mounted && status.isSigning != _signingNow) {
+        setState(() => _signingNow = status.isSigning);
       }
-    } else {
-      // Previously a failed request was ignored silently, which looked
-      // like "the app does nothing". Tell the person what went wrong.
-      final message =
-          result['message'] as String? ?? 'Recognition request failed';
-      if (message != _lastShownError) {
-        _lastShownError = message;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(message), backgroundColor: Colors.red),
-        );
+
+      // 1) A finished word is waiting -> classify it.
+      if (status.queued > 0) {
+        final seg = _mediaPipeService.popSegment();
+        if (seg != null) await _classifySegment(seg);
+        return;
       }
+
+      if (status.isSigning || _classifying) return;
+
+      // 2) Pause after at least one word -> sentence is over.
+      if (_wordStream.isNotEmpty && status.msSinceHand >= _sentencePauseMs) {
+        await _finishSentence();
+        return;
+      }
+
+      // 3) Nobody is signing at all -> stop after a while.
+      if (_wordStream.isEmpty && status.msSinceHand >= _idleTimeoutMs) {
+        _stopListening(keepResult: false);
+        _toast('No signing seen for a while. Tap Start Signing to try again.');
+      }
+    } finally {
+      _ticking = false;
     }
   }
 
-  Future<void> _generateSentence() async {
+  Future<void> _classifySegment(HandWindow seg) async {
     final token = _token;
-    if (token == null || _wordStream.isEmpty) return;
+    if (token == null || !_listening) return;
 
-    setState(() => _isGenerating = true);
-
-    final result = await _recognitionService.generate(
+    setState(() => _classifying = true);
+    final result = await _recognitionService.classifySequence(
       token: token,
-      wordSequence: _wordStream,
-      expressionContext: _expressionLabel,
+      frames: seg.frames,
     );
-
     if (!mounted) return;
-    setState(() => _isGenerating = false);
-
-    if (result['success'] == true) {
-      setState(() => _generatedSentence = result['urdu_sentence'] as String?);
-      _stopSigning(keepResult: true);
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result['message'] ?? 'Could not generate sentence'),
-          backgroundColor: Colors.red,
-        ),
-      );
+    if (!_listening) {
+      setState(() => _classifying = false);
+      return;
     }
+
+    if (result['success'] != true) {
+      setState(() {
+        _classifying = false;
+        _resultIsGood = false;
+        _resultMessage =
+            (result['message'] as String?) ?? 'Recognition request failed';
+      });
+      return;
+    }
+
+    final word = result['word'] as String?;
+    final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
+    final uncertain = result['uncertain'] == true;
+    final top3 = _parseTop3(result['top3']);
+    final pct = (confidence * 100).round();
+
+    setState(() {
+      _classifying = false;
+      if (word != null && !uncertain) {
+        _wordStream.add(word);
+        _resultIsGood = true;
+        _resultMessage = '${_urdu(word)}  ($pct%)';
+        _suggestions = [];
+      } else {
+        _resultIsGood = false;
+        _suggestions = top3;
+        _resultMessage = top3.isEmpty
+            ? 'I could not recognise that sign. Please repeat it.'
+            : 'Not sure about that sign. Tap the right word, or repeat it.';
+      }
+    });
+  }
+
+  List<_Guess> _parseTop3(dynamic raw) {
+    final out = <_Guess>[];
+    if (raw is! List) return out;
+    for (final e in raw) {
+      if (e is Map) {
+        final w = (e['word'] ?? e['label'] ?? e['name'])?.toString();
+        final c = e['confidence'] ?? e['prob'] ?? e['probability'] ?? e['score'];
+        if (w != null) out.add(_Guess(w, c is num ? c.toDouble() : 0.0));
+      } else if (e is List && e.isNotEmpty) {
+        final c = e.length > 1 ? e[1] : 0;
+        out.add(_Guess(e[0].toString(), c is num ? c.toDouble() : 0.0));
+      } else if (e is String) {
+        out.add(_Guess(e, 0.0));
+      }
+    }
+    return out;
+  }
+
+  void _acceptSuggestion(_Guess g) {
+    setState(() {
+      _wordStream.add(g.word);
+      _resultIsGood = true;
+      _resultMessage = _urdu(g.word);
+      _suggestions = [];
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Sentence + audio
+  // ------------------------------------------------------------------
+
+  /// TEMPORARY: joins the Urdu words. Replaced by the real Urdu
+  /// sentence engine (backend) on Day 4.
+  String _buildSentence(List<String> labels) {
+    return '${labels.map(_urdu).join(' ')}۔';
+  }
+
+  Future<void> _finishSentence() async {
+    if (_finishing || _wordStream.isEmpty) return;
+    _finishing = true;
+    final sentence = _buildSentence(_wordStream);
+    _stopListening(keepResult: true);
+    if (!mounted) {
+      _finishing = false;
+      return;
+    }
+    setState(() => _generatedSentence = sentence);
+    await _playAudio(); // speaks automatically
+    _finishing = false;
+    if (mounted) setState(() {});
   }
 
   Future<void> _playAudio() async {
     if (_generatedSentence == null || _isSpeaking) return;
-
     final token = _token;
     if (token == null) return;
 
     setState(() => _isSpeaking = true);
-
     final result = await _audioService.speak(
       token: token,
       text: _generatedSentence!,
     );
-
     if (!mounted) return;
-    setState(() => _isSpeaking = false);
 
     if (result['success'] == true) {
-      await _audioPlayer.play(BytesSource(result['bytes'] as Uint8List));
+      setState(() => _isSpeaking = false);
+      try {
+        await _audioPlayer.play(BytesSource(result['bytes'] as Uint8List));
+      } catch (_) {
+        _toast('Tap "Play Audio" to hear the sentence.');
+      }
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result['message'] ?? 'Could not play audio'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      setState(() => _isSpeaking = false);
+      _toast(result['message'] ?? 'Could not play audio', error: true);
     }
+  }
+
+  // ------------------------------------------------------------------
+  // UI
+  // ------------------------------------------------------------------
+
+  String get _aiBadgeText {
+    if (_listening) return 'AI Active';
+    if (!_aiChecked || !_modelChecked) return 'AI Loading...';
+    if (_aiReady && _modelReady) return 'AI Ready';
+    if (_aiReady && !_modelReady) return 'Server model offline';
+    return 'AI Standby';
+  }
+
+  bool get _aiBadgeGreen => _listening || (_aiReady && _modelReady);
+
+  String get _liveStatus {
+    if (_classifying) return 'Recognising...';
+    if (_signingNow) return 'Signing detected...';
+    if (_wordStream.isEmpty) return 'Listening. Raise your hand and sign.';
+    return 'Listening. Stop signing to finish the sentence.';
   }
 
   @override
@@ -353,11 +468,10 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                 builder: (context) => AlertDialog(
                   title: const Text('How to use HamKalaam'),
                   content: const Text(
-                    '1. Tap "Start Signing" to begin\n'
-                    '2. Sign PSL gestures in front of the camera\n'
-                    '3. Words appear in real time as you sign\n'
-                    '4. Pause for 1 second to generate the Urdu sentence\n'
-                    '5. The sentence is spoken aloud automatically',
+                    '1. Tap "Start Signing"\n'
+                    '2. Sign your words. Put your hands down for a moment between words\n'
+                    '3. Each word appears in Urdu as you sign\n'
+                    '4. When you stop signing for about 2 seconds, the sentence is made and spoken automatically',
                     style: TextStyle(height: 1.6),
                   ),
                   actions: [
@@ -374,336 +488,406 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       ),
       body: Column(
         children: [
-          // Camera Preview Area
-          Expanded(
-            flex: 5,
-            child: Stack(
-              children: [
-                Container(
-                  width: double.infinity,
-                  height: double.infinity,
-                  color: Colors.grey[900],
-                  child: _buildCameraArea(),
-                ),
-
-                // Expression badge
-                if (_isSigning)
-                  Positioned(
-                    top: 20,
-                    right: 20,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.blue.withOpacity(0.85),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        children: [
-                          const Text('😐 ', style: TextStyle(fontSize: 14)),
-                          Text(
-                            _expressionLabel,
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                // Real hand-detection badge (MediaPipe)
-                if (_isSigning)
-                  Positioned(
-                    top: 20,
-                    left: 20,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: (_handDetected ? Colors.green : Colors.grey)
-                            .withOpacity(0.85),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            _handDetected
-                                ? Icons.fiber_manual_record
-                                : Icons.search,
-                            color: Colors.white,
-                            size: 10,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _handDetected
-                                ? 'Hand Detected${_handCount > 1 ? " ($_handCount)" : ""}'
-                                : 'Searching for hand...',
-                            style: const TextStyle(
-                                color: Colors.white, fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-
-                // AI Badge
-                Positioned(
-                  bottom: 16,
-                  left: 16,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: (_isSigning || _aiReady) ? Colors.green : Colors.grey,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          _isSigning
-                              ? 'AI Active'
-                              : (!_aiChecked
-                                  ? 'AI Loading...'
-                                  : (_aiReady ? 'AI Ready' : 'AI Standby')),
-                          style: const TextStyle(
-                              color: Colors.white70, fontSize: 11),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Bottom Panel
-          Expanded(
-            flex: 4,
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: Colors.grey[50],
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(24),
-                  topRight: Radius.circular(24),
-                ),
-              ),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Word Stream
-                    const Text(
-                      'Word Stream',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.grey,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.grey[200]!),
-                      ),
-                      child: _wordStream.isEmpty
-                          ? Text(
-                              'Words will appear here as you sign...',
-                              style: TextStyle(
-                                  color: Colors.grey[400], fontSize: 13),
-                            )
-                          : Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: _wordStream
-                                  .map((word) => Container(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 12, vertical: 6),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF1F3864)
-                                              .withOpacity(0.1),
-                                          borderRadius:
-                                              BorderRadius.circular(20),
-                                        ),
-                                        child: Text(
-                                          word,
-                                          style: const TextStyle(
-                                            color: Color(0xFF1F3864),
-                                            fontWeight: FontWeight.w500,
-                                            fontSize: 15,
-                                          ),
-                                        ),
-                                      ))
-                                  .toList(),
-                            ),
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    // Generated Sentence
-                    const Text(
-                      'Generated Sentence',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.grey,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: _generatedSentence != null
-                            ? const Color(0xFF1F3864).withOpacity(0.05)
-                            : Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: _generatedSentence != null
-                              ? const Color(0xFF1F3864).withOpacity(0.2)
-                              : Colors.grey[200]!,
-                        ),
-                      ),
-                      child: _generatedSentence != null
-                          ? Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _generatedSentence!,
-                                  style: const TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF1F3864),
-                                    height: 1.5,
-                                  ),
-                                  textDirection: TextDirection.rtl,
-                                ),
-                                const SizedBox(height: 12),
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: OutlinedButton.icon(
-                                        onPressed: _isSpeaking ? null : _playAudio,
-                                        icon: _isSpeaking
-                                            ? const SizedBox(
-                                                width: 16,
-                                                height: 16,
-                                                child: CircularProgressIndicator(
-                                                    strokeWidth: 2),
-                                              )
-                                            : const Icon(
-                                                Icons.volume_up_outlined),
-                                        label: Text(_isSpeaking
-                                            ? 'Loading...'
-                                            : 'Play Audio'),
-                                        style: OutlinedButton.styleFrom(
-                                          foregroundColor:
-                                              const Color(0xFF1F3864),
-                                          side: const BorderSide(
-                                              color: Color(0xFF1F3864)),
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(10),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    IconButton(
-                                      onPressed: () {
-                                        setState(() {
-                                          _generatedSentence = null;
-                                          _wordStream.clear();
-                                          _lastAddedWord = null;
-                                        });
-                                      },
-                                      icon: const Icon(Icons.refresh,
-                                          color: Colors.grey),
-                                      tooltip: 'Clear',
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            )
-                          : Text(
-                              'Your Urdu sentence will appear here after signing...',
-                              style: TextStyle(
-                                  color: Colors.grey[400], fontSize: 13),
-                            ),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // Start/Stop button
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: (_isMediaPipeStarting || _isGenerating)
-                            ? null
-                            : _toggleSigning,
-                        icon: (_isMediaPipeStarting || _isGenerating)
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2, color: Colors.white),
-                              )
-                            : Icon(
-                                _isSigning ? Icons.stop : Icons.sign_language,
-                              ),
-                        label: Text(
-                          _isMediaPipeStarting
-                              ? 'Starting AI model...'
-                              : _isGenerating
-                                  ? 'Generating sentence...'
-                                  : (_isSigning
-                                      ? 'Stop Signing'
-                                      : 'Start Signing'),
-                          style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w600),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _isSigning
-                              ? Colors.red[600]
-                              : const Color(0xFF1F3864),
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size(double.infinity, 52),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
+          Expanded(flex: 5, child: _buildCameraStack()),
+          Expanded(flex: 4, child: _buildBottomPanel()),
         ],
       ),
     );
   }
 
-  /// Builds whatever the camera area should show: loading spinner,
-  /// error message, or the real live camera feed.
+  Widget _buildCameraStack() {
+    return Stack(
+      children: [
+        Container(
+          width: double.infinity,
+          height: double.infinity,
+          color: Colors.grey[900],
+          child: _buildCameraArea(),
+        ),
+
+        if (_listening)
+          Positioned(
+            top: 20,
+            right: 20,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.blue.withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                _expressionLabel,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500),
+              ),
+            ),
+          ),
+
+        if (_listening)
+          Positioned(
+            top: 20,
+            left: 20,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: (_handDetected ? Colors.green : Colors.grey)
+                    .withValues(alpha: 0.85),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _handDetected ? Icons.fiber_manual_record : Icons.search,
+                    color: Colors.white,
+                    size: 10,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _handDetected
+                        ? 'Hand Detected${_handCount > 1 ? " ($_handCount)" : ""}'
+                        : 'Searching for hand...',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+        // Live status line
+        if (_listening)
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 48,
+            child: Center(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: (_signingNow ? Colors.red : Colors.black)
+                      .withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  _liveStatus,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ),
+
+        // AI badge
+        Positioned(
+          bottom: 16,
+          left: 16,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: _aiBadgeGreen ? Colors.green : Colors.grey,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(_aiBadgeText,
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 11)),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBottomPanel() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: const BorderRadius.only(
+          topLeft: Radius.circular(24),
+          topRight: Radius.circular(24),
+        ),
+      ),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionLabel('Word Stream'),
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey[200]!),
+              ),
+              child: _wordStream.isEmpty
+                  ? Text('Recognised words will appear here...',
+                      style: TextStyle(color: Colors.grey[400], fontSize: 13))
+                  : Directionality(
+                      textDirection: TextDirection.rtl,
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          for (var i = 0; i < _wordStream.length; i++)
+                            InputChip(
+                              label: Text(_urdu(_wordStream[i])),
+                              labelStyle: const TextStyle(
+                                  color: _navy,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 20),
+                              backgroundColor: _navy.withValues(alpha: 0.1),
+                              onDeleted: _finishing
+                                  ? null
+                                  : () =>
+                                      setState(() => _wordStream.removeAt(i)),
+                            ),
+                        ],
+                      ),
+                    ),
+            ),
+
+            if (_resultMessage != null) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Icon(
+                    _resultIsGood
+                        ? Icons.check_circle_outline
+                        : Icons.info_outline,
+                    size: 18,
+                    color: _resultIsGood ? Colors.green : Colors.orange[800],
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _resultMessage!,
+                      style: TextStyle(
+                        fontSize: 15,
+                        color: _resultIsGood
+                            ? Colors.green[800]
+                            : Colors.orange[900],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (_suggestions.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final g in _suggestions)
+                    ActionChip(
+                      label: Text(
+                        '${_urdu(g.word)}${g.confidence > 0 ? "  ${(g.confidence * 100).round()}%" : ""}',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                      onPressed: () => _acceptSuggestion(g),
+                    ),
+                ],
+              ),
+            ],
+
+            const SizedBox(height: 16),
+            _sectionLabel('Generated Sentence'),
+            const SizedBox(height: 8),
+            _buildSentenceBox(),
+            const SizedBox(height: 20),
+            _buildButtons(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionLabel(String text) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w600,
+        color: Colors.grey,
+        letterSpacing: 0.5,
+      ),
+    );
+  }
+
+  Widget _buildSentenceBox() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _generatedSentence != null
+            ? _navy.withValues(alpha: 0.05)
+            : Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: _generatedSentence != null
+              ? _navy.withValues(alpha: 0.2)
+              : Colors.grey[200]!,
+        ),
+      ),
+      child: _generatedSentence != null
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: double.infinity,
+                  child: Text(
+                    _generatedSentence!,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: _navy,
+                      height: 1.6,
+                    ),
+                    textDirection: TextDirection.rtl,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _isSpeaking ? null : _playAudio,
+                        icon: _isSpeaking
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.volume_up_outlined),
+                        label: Text(_isSpeaking ? 'Speaking...' : 'Play Again'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _navy,
+                          side: const BorderSide(color: _navy),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      onPressed: () {
+                        setState(() {
+                          _generatedSentence = null;
+                          _wordStream.clear();
+                          _resultMessage = null;
+                          _suggestions = [];
+                        });
+                      },
+                      icon: const Icon(Icons.refresh, color: Colors.grey),
+                      tooltip: 'Clear',
+                    ),
+                  ],
+                ),
+              ],
+            )
+          : Text('Your Urdu sentence will appear here...',
+              style: TextStyle(color: Colors.grey[400], fontSize: 13)),
+    );
+  }
+
+  Widget _buildButtons() {
+    if (!_listening) {
+      final busy = _isStarting || _isSpeaking;
+      return SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: busy ? null : _startListening,
+          icon: busy
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white),
+                )
+              : const Icon(Icons.sign_language),
+          label: Text(
+            _isStarting
+                ? 'Starting camera...'
+                : (_isSpeaking
+                    ? 'Speaking...'
+                    : (_generatedSentence != null
+                        ? 'Sign again'
+                        : 'Start Signing')),
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _navy,
+            foregroundColor: Colors.white,
+            minimumSize: const Size(double.infinity, 52),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        ),
+      );
+    }
+
+    // Listening: Stop + manual "make sentence now" as a backup.
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: (_wordStream.isEmpty || _classifying)
+                ? null
+                : _finishSentence,
+            icon: const Icon(Icons.auto_awesome),
+            label: const Text('Sentence now'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: _navy,
+              minimumSize: const Size(0, 52),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: () => _stopListening(keepResult: false),
+            icon: const Icon(Icons.stop),
+            label: const Text('Stop',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red[600],
+              foregroundColor: Colors.white,
+              minimumSize: const Size(0, 52),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildCameraArea() {
     if (_cameraError != null) {
       return Center(
@@ -761,7 +945,6 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
           );
         }
 
-        // Real live camera preview, filling the available area.
         return ClipRect(
           child: OverflowBox(
             alignment: Alignment.center,

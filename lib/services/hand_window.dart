@@ -21,3 +21,23 @@ class HandWindow {
   /// Share of frames that contained a hand (0.0 - 1.0).
   double get handRatio => frames.isEmpty ? 0 : handFrames / frames.length;
 }
+
+/// Live state of the automatic word cutter (continuous mode).
+class SegmentStatus {
+  final String state; // 'idle' (waiting) or 'signing' (a word is being cut)
+  final int queued; // finished words waiting to be classified
+  final int msSinceHand; // how long since a hand was last seen
+  final int discarded; // too-short segments that were ignored
+
+  const SegmentStatus({
+    required this.state,
+    required this.queued,
+    required this.msSinceHand,
+    required this.discarded,
+  });
+
+  static const idle =
+      SegmentStatus(state: 'idle', queued: 0, msSinceHand: 0, discarded: 0);
+
+  bool get isSigning => state == 'signing';
+}

@@ -6,9 +6,11 @@
 // detection, completely separate from the visible Flutter `camera`
 // package preview.
 //
-// DAY 1 ADDITION: startWindow() / stopWindow() record every detected
-// frame (with a timestamp) and return exactly 60 evenly spaced frames,
-// the same shape as the training dataset (60 x 126).
+// startWindow()/stopWindow(): fixed-window recording (60 x 126).
+// startContinuous()/popSegment()/getSegmentStatus(): automatic mode.
+// A small state machine cuts the live frame stream into one segment per
+// signed word (hand appears -> hand gone for END_GAP_MS), resamples each
+// segment to 60 frames and queues it for the classifier.
 
 import {
   FilesetResolver,
@@ -90,6 +92,117 @@ window.hamkalaamMediaPipe = (function () {
     return Math.round(v * 100000) / 100000;
   }
 
+  // ---- continuous segmenter -----------------------------------------
+  const SEG = {
+    startHandMs: 120,   // hand must be present this long to start a word
+    endGapMs: 700,      // no hand this long = the word is finished
+    maxMs: 3500,        // force-cut a very long segment
+    minMs: 400,         // ignore shorter segments (hand just passing by)
+    minHandFrames: 8,   // ignore segments with fewer hand frames
+    preRollMs: 300,     // keep a little time before the first hand frame
+    postRollMs: 300,    // ... and after the last one
+  };
+  let contActive = false;
+  let ring = [];            // recent frames (for pre-roll)
+  let segState = "idle";    // "idle" | "signing"
+  let handRunStart = null;
+  let segFrames = [];
+  let lastHandT = 0;        // last frame time that had a hand (in segment)
+  let lastHandSeenT = 0;    // last frame time that had a hand (anywhere)
+  let lastFrameT = 0;
+  let segQueue = [];
+  let discarded = 0;
+
+  function resetSegmenter(t0) {
+    ring = [];
+    segState = "idle";
+    handRunStart = null;
+    segFrames = [];
+    segQueue = [];
+    discarded = 0;
+    lastHandT = t0;
+    lastHandSeenT = t0;
+    lastFrameT = t0;
+  }
+
+  function startContinuous() {
+    resetSegmenter(performance.now());
+    contActive = true;
+  }
+
+  function stopContinuous() {
+    contActive = false;
+    resetSegmenter(0);
+  }
+
+  function finishSegment() {
+    const keepUntil = lastHandT + SEG.postRollMs;
+    const trimmed = segFrames.filter((f) => f.t <= keepUntil);
+    segFrames = [];
+    segState = "idle";
+    handRunStart = null;
+    const handFrames = trimmed.filter((f) => f.hand).length;
+    const dur = trimmed.length ? trimmed[trimmed.length - 1].t - trimmed[0].t : 0;
+    if (handFrames < SEG.minHandFrames || dur < SEG.minMs) {
+      discarded++;
+      return;
+    }
+    const picked = resample(trimmed, WINDOW_FRAMES);
+    segQueue.push({
+      frames: picked.map((f) => f.flat.map(round5)),
+      handFrames: picked.filter((f) => f.hand).length,
+      rawCount: trimmed.length,
+      durationMs: Math.round(dur),
+    });
+  }
+
+  function processFrame(t, flat, hasHand) {
+    lastFrameT = t;
+    const frame = { t: t, flat: flat, hand: hasHand };
+    if (hasHand) lastHandSeenT = t;
+
+    if (segState === "idle") {
+      ring.push(frame);
+      while (ring.length && t - ring[0].t > SEG.preRollMs + SEG.startHandMs + 200) {
+        ring.shift();
+      }
+      if (hasHand) {
+        if (handRunStart === null) handRunStart = t;
+        if (t - handRunStart >= SEG.startHandMs) {
+          segState = "signing";
+          segFrames = ring.filter((f) => f.t >= handRunStart - SEG.preRollMs);
+          lastHandT = t;
+          ring = [];
+        }
+      } else {
+        handRunStart = null;
+      }
+    } else {
+      segFrames.push(frame);
+      if (hasHand) lastHandT = t;
+      if (t - lastHandT >= SEG.endGapMs) {
+        finishSegment();
+      } else if (t - segFrames[0].t >= SEG.maxMs) {
+        finishSegment();
+      }
+    }
+  }
+
+  // Returns JSON of the oldest finished segment, or "" if none.
+  function popSegment() {
+    if (segQueue.length === 0) return "";
+    return JSON.stringify(segQueue.shift());
+  }
+
+  function getSegmentStatus() {
+    return JSON.stringify({
+      state: segState,
+      queued: segQueue.length,
+      msSinceHand: Math.round(lastFrameT - lastHandSeenT),
+      discarded: discarded,
+    });
+  }
+
   function detectLoop() {
     if (!running || !handLandmarker || !hiddenVideo) return;
 
@@ -126,6 +239,8 @@ window.hamkalaamMediaPipe = (function () {
         if (recording && windowBuffer.length < MAX_BUFFER) {
           windowBuffer.push({ t: nowMs, flat: flat, hand: count > 0 });
         }
+
+        if (contActive) processFrame(nowMs, flat, count > 0);
       } catch (e) {
         console.error("MediaPipe detectForVideo error:", e);
       }
@@ -190,6 +305,8 @@ window.hamkalaamMediaPipe = (function () {
   return {
     init, startDetection, stopDetection, getLatestResult,
     startWindow, stopWindow,
+    startContinuous, stopContinuous, popSegment, getSegmentStatus,
     _resampleForTest: resample,
+    _processFrameForTest: processFrame,
   };
 })();
