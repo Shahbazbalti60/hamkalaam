@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import '../../services/session_service.dart';
@@ -84,7 +84,7 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
   String _formatDate(String? isoDate) {
     if (isoDate == null) return '';
     try {
-      final date = DateTime.parse(isoDate);
+      final date = DateTime.parse(isoDate).toLocal();
       const months = [
         'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
@@ -98,7 +98,7 @@ class _SessionHistoryScreenState extends State<SessionHistoryScreen> {
   String _formatTime(String? isoDate) {
     if (isoDate == null) return '';
     try {
-      final date = DateTime.parse(isoDate);
+      final date = DateTime.parse(isoDate).toLocal();
       final hour24 = date.hour;
       final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
       final minute = date.minute.toString().padLeft(2, '0');
@@ -392,3 +392,4 @@ class _SessionCardState extends State<_SessionCard> {
     }
   }
 }
+

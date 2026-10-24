@@ -11,6 +11,7 @@ import '../../services/hand_window.dart';
 import '../../services/camera_helper.dart';
 import '../../services/recognition_service.dart';
 import '../../services/audio_service.dart';
+import '../../services/session_service.dart';
 
 class _Guess {
   final String word; // model label (English key)
@@ -74,6 +75,13 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   final AudioService _audioService = AudioService();
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isSpeaking = false;
+  bool _audioFailed = false; // last audio request failed -> show Retry
+  Uint8List? _audioCache; // last spoken audio, so replay needs no network
+  String? _audioCacheFor;
+
+  // --- History logging ---
+  final SessionService _sessionService = SessionService();
+  int? _sessionId; // created lazily on the first sentence
 
   @override
   void initState() {
@@ -419,35 +427,108 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       _finishing = false;
       return;
     }
-    setState(() => _generatedSentence = sentence);
+    setState(() {
+      _generatedSentence = sentence;
+      _audioFailed = false;
+    });
+    if (token != null) {
+      // Background: never blocks the speech or the screen.
+      unawaited(_saveToHistory(token, sentence, words, _expressionLabel));
+    }
     await _playAudio(); // speaks automatically
     _finishing = false;
     if (mounted) setState(() {});
   }
 
   Future<void> _playAudio() async {
-    if (_generatedSentence == null || _isSpeaking) return;
+    final sentence = _generatedSentence;
+    if (sentence == null || _isSpeaking) return;
     final token = _token;
     if (token == null) return;
 
-    setState(() => _isSpeaking = true);
-    final result = await _audioService.speak(
-      token: token,
-      text: _generatedSentence!,
-    );
+    // Replay from memory if we already have this sentence's audio.
+    if (_audioCache != null && _audioCacheFor == sentence) {
+      await _playBytes(_audioCache!);
+      return;
+    }
+
+    setState(() {
+      _isSpeaking = true;
+      _audioFailed = false;
+    });
+    final result = await _audioService
+        .speak(token: token, text: sentence)
+        .timeout(
+          const Duration(seconds: 8),
+          onTimeout: () => <String, dynamic>{'success': false},
+        );
     if (!mounted) return;
 
     if (result['success'] == true) {
-      setState(() => _isSpeaking = false);
-      try {
-        await _audioPlayer.play(BytesSource(result['bytes'] as Uint8List));
-      } catch (_) {
-        _toast('Tap "Play Audio" to hear the sentence.');
-      }
+      final bytes = result['bytes'] as Uint8List;
+      setState(() {
+        _isSpeaking = false;
+        _audioCache = bytes;
+        _audioCacheFor = sentence;
+      });
+      await _playBytes(bytes);
     } else {
-      setState(() => _isSpeaking = false);
-      _toast(result['message'] ?? 'Could not play audio', error: true);
+      // Offline fallback: the Urdu text stays on screen, audio can be retried.
+      setState(() {
+        _isSpeaking = false;
+        _audioFailed = true;
+      });
+      _toast('Audio unavailable - check your connection.', error: true);
     }
+  }
+
+  Future<void> _playBytes(Uint8List bytes) async {
+    try {
+      await _audioPlayer.stop();
+      await _audioPlayer.play(BytesSource(bytes));
+    } catch (_) {
+      _toast('Tap "Play Again" to hear the sentence.');
+    }
+  }
+
+  /// Saves the sentence to the user's history. Retries up to 3 times
+  /// (waiting 1 s, 2 s, 4 s) and only shows a quiet message if all fail.
+  Future<void> _saveToHistory(
+    String token,
+    String sentence,
+    List<String> words,
+    String expression,
+  ) async {
+    const waits = [1, 2, 4];
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        if (_sessionId == null) {
+          final started = await _sessionService.startSession(token);
+          if (started['success'] == true) {
+            final session = started['session'];
+            final id = session is Map ? (session['id'] ?? session['session_id']) : null;
+            if (id is num) _sessionId = id.toInt();
+          }
+        }
+        final id = _sessionId;
+        if (id != null) {
+          final saved = await _sessionService.saveSentence(
+            token: token,
+            sessionId: id,
+            urduSentence: sentence,
+            wordSequence: words,
+            expressionContext: expression,
+          );
+          if (saved['success'] == true) return;
+        }
+      } catch (_) {
+        // fall through to retry
+      }
+      if (attempt < 2) {
+        await Future.delayed(Duration(seconds: waits[attempt]));
+      }
+    }
+    _toast('Could not save this sentence to your history.');
   }
 
   // ------------------------------------------------------------------
@@ -799,8 +880,12 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                                 child:
                                     CircularProgressIndicator(strokeWidth: 2),
                               )
-                            : const Icon(Icons.volume_up_outlined),
-                        label: Text(_isSpeaking ? 'Speaking...' : 'Play Again'),
+                            : Icon(_audioFailed
+                                ? Icons.refresh
+                                : Icons.volume_up_outlined),
+                        label: Text(_isSpeaking
+                            ? 'Speaking...'
+                            : (_audioFailed ? 'Retry audio' : 'Play Again')),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: _navy,
                           side: const BorderSide(color: _navy),
@@ -815,6 +900,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                       onPressed: () {
                         setState(() {
                           _generatedSentence = null;
+                          _audioFailed = false;
                           _wordStream.clear();
                           _resultMessage = null;
                           _suggestions = [];
