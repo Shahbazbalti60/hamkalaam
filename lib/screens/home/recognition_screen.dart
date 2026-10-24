@@ -383,8 +383,8 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   // Sentence + audio
   // ------------------------------------------------------------------
 
-  /// TEMPORARY: joins the Urdu words. Replaced by the real Urdu
-  /// sentence engine (backend) on Day 4.
+  /// FALLBACK only (used if the server cannot be reached): joins the
+  /// Urdu words. The real sentence comes from the backend /generate.
   String _buildSentence(List<String> labels) {
     return '${labels.map(_urdu).join(' ')}۔';
   }
@@ -392,8 +392,29 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   Future<void> _finishSentence() async {
     if (_finishing || _wordStream.isEmpty) return;
     _finishing = true;
-    final sentence = _buildSentence(_wordStream);
+    final words = List<String>.from(_wordStream);
+    final token = _token;
     _stopListening(keepResult: true);
+    if (!mounted) {
+      _finishing = false;
+      return;
+    }
+    setState(() {}); // shows "Making sentence..."
+
+    // Real Urdu sentence from the backend rule engine; if the server
+    // is unreachable, fall back to simply joining the Urdu words.
+    var sentence = _buildSentence(words);
+    if (token != null) {
+      final result = await _recognitionService.generate(
+        token: token,
+        wordSequence: words,
+        expressionContext: _expressionLabel,
+      );
+      final text = result['urdu_sentence'];
+      if (result['success'] == true && text is String && text.isNotEmpty) {
+        sentence = text;
+      }
+    }
     if (!mounted) {
       _finishing = false;
       return;
@@ -813,7 +834,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
   Widget _buildButtons() {
     if (!_listening) {
-      final busy = _isStarting || _isSpeaking;
+      final busy = _isStarting || _isSpeaking || _finishing;
       return SizedBox(
         width: double.infinity,
         child: ElevatedButton.icon(
@@ -829,7 +850,9 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
           label: Text(
             _isStarting
                 ? 'Starting camera...'
-                : (_isSpeaking
+                : (_finishing && !_isSpeaking
+                    ? 'Making sentence...'
+                    : _isSpeaking
                     ? 'Speaking...'
                     : (_generatedSentence != null
                         ? 'Sign again'
