@@ -1,13 +1,10 @@
 import 'dart:async';
 
 import 'hand_detection_result.dart';
+import 'hand_window.dart';
 
-/// No-op stub for non-web platforms (e.g. Android build).
-///
-/// MediaPipe-in-browser is only implemented for the web target in this
-/// phase of the project. On other platforms, hand detection always
-/// reports "not detected" rather than crashing or doing nothing
-/// silently-but-confusingly.
+/// Non-web stub (Android / iOS): no hand detection yet, every call is
+/// a harmless no-op so the rest of the app compiles and runs.
 class MediaPipeService {
   final _controller = StreamController<HandDetectionResult>.broadcast();
 
@@ -17,9 +14,14 @@ class MediaPipeService {
 
   Future<bool> startDetection() async => false;
 
-  void stopDetection() {
-    _controller.add(HandDetectionResult.none);
+  Future<HandWindow> recordWindow({
+    Duration duration = const Duration(milliseconds: 2500),
+  }) async {
+    await Future.delayed(duration);
+    return HandWindow.empty;
   }
+
+  void stopDetection() {}
 
   void dispose() {
     _controller.close();

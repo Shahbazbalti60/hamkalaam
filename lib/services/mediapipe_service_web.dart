@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:js_interop';
 
 import 'hand_detection_result.dart';
+import 'hand_window.dart';
 
 @JS('hamkalaamMediaPipe.init')
 external JSPromise<JSBoolean> _jsInit();
@@ -16,12 +17,19 @@ external void _jsStopDetection();
 @JS('hamkalaamMediaPipe.getLatestResult')
 external JSString _jsGetLatestResult();
 
-/// Web implementation — talks to web/mediapipe_bridge.js.
+@JS('hamkalaamMediaPipe.startWindow')
+external void _jsStartWindow();
+
+@JS('hamkalaamMediaPipe.stopWindow')
+external JSString _jsStopWindow();
+
+/// Web implementation - talks to web/mediapipe_bridge.js.
 ///
 /// The JS side runs its own independent hidden camera stream and
 /// polls MediaPipe's HandLandmarker on every animation frame. This
 /// class polls the JS side's latest cached result at a fixed interval
-/// and exposes it as a Dart stream.
+/// and exposes it as a Dart stream. It can also record a fixed
+/// "window" of frames (see [recordWindow]) for the sequence model.
 class MediaPipeService {
   Timer? _pollTimer;
   final _controller = StreamController<HandDetectionResult>.broadcast();
@@ -30,9 +38,7 @@ class MediaPipeService {
 
   bool _initialized = false;
 
-  /// Loads the MediaPipe model. Safe to call multiple times — the JS
-  /// side no-ops if already initialized. Can take a few seconds on
-  /// first call since it downloads the model from Google's CDN.
+  /// Loads the MediaPipe model. Safe to call multiple times.
   Future<bool> init() async {
     if (_initialized) return true;
     try {
@@ -44,8 +50,8 @@ class MediaPipeService {
     }
   }
 
-  /// Starts an independent hidden camera stream and begins polling
-  /// detection results roughly 6-7 times per second.
+  /// Starts the hidden camera stream and begins polling results
+  /// roughly 6-7 times per second.
   Future<bool> startDetection() async {
     try {
       final result = await _jsStartDetection().toDart;
@@ -75,9 +81,34 @@ class MediaPipeService {
     }
   }
 
+  /// Records [duration] of frames (default 2.5 s) and returns exactly
+  /// 60 evenly spaced frames. Detection must already be running.
+  Future<HandWindow> recordWindow({
+    Duration duration = const Duration(milliseconds: 2500),
+  }) async {
+    try {
+      _jsStartWindow();
+      await Future.delayed(duration);
+      final jsonStr = _jsStopWindow().toDart;
+      final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final raw = data['frames'] as List<dynamic>? ?? [];
+      final frames = raw
+          .map((f) =>
+              (f as List<dynamic>).map((v) => (v as num).toDouble()).toList())
+          .toList();
+      return HandWindow(
+        frames: frames,
+        handFrames: (data['handFrames'] as num?)?.toInt() ?? 0,
+        rawCount: (data['rawCount'] as num?)?.toInt() ?? 0,
+        durationMs: (data['durationMs'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return HandWindow.empty;
+    }
+  }
+
   /// Stops the hidden camera stream and detection loop. Always call
-  /// this when leaving the recognition screen so the camera light
-  /// actually turns off.
+  /// this when leaving the recognition screen.
   void stopDetection() {
     _pollTimer?.cancel();
     _pollTimer = null;
