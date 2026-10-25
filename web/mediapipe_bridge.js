@@ -302,10 +302,74 @@ window.hamkalaamMediaPipe = (function () {
     });
   }
 
+  // ---- light meter (admin dataset capture) --------------------------
+  // Average brightness (0-255) of the camera picture, using the same
+  // formula as the SRDS: 0.299 R + 0.587 G + 0.114 B.
+  let lightStream = null;
+  let lightVideo = null;
+  let lightTimer = null;
+  let lightValue = -1;
+
+  async function startLightMeter() {
+    if (lightTimer) return true;
+    lightStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" },
+    });
+    lightVideo = document.createElement("video");
+    lightVideo.style.display = "none";
+    lightVideo.autoplay = true;
+    lightVideo.playsInline = true;
+    lightVideo.muted = true;
+    lightVideo.srcObject = lightStream;
+    document.body.appendChild(lightVideo);
+    await lightVideo.play();
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 24;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    lightTimer = setInterval(() => {
+      if (!lightVideo || lightVideo.readyState < 2) return;
+      try {
+        ctx.drawImage(lightVideo, 0, 0, 32, 24);
+        const d = ctx.getImageData(0, 0, 32, 24).data;
+        let sum = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        }
+        lightValue = sum / (d.length / 4);
+      } catch (e) {
+        /* ignore a bad frame */
+      }
+    }, 300);
+    return true;
+  }
+
+  function stopLightMeter() {
+    if (lightTimer) {
+      clearInterval(lightTimer);
+      lightTimer = null;
+    }
+    if (lightStream) {
+      lightStream.getTracks().forEach((t) => t.stop());
+      lightStream = null;
+    }
+    if (lightVideo) {
+      lightVideo.remove();
+      lightVideo = null;
+    }
+    lightValue = -1;
+  }
+
+  function getBrightness() {
+    return lightValue;
+  }
+
   return {
     init, startDetection, stopDetection, getLatestResult,
     startWindow, stopWindow,
     startContinuous, stopContinuous, popSegment, getSegmentStatus,
+    startLightMeter, stopLightMeter, getBrightness,
     _resampleForTest: resample,
     _processFrameForTest: processFrame,
   };

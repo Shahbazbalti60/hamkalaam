@@ -21,6 +21,12 @@ class MediaPipeService {
     return HandWindow.empty;
   }
 
+  Future<bool> startLightMeter() async => false;
+
+  void stopLightMeter() {}
+
+  double? get brightness => null;
+
   void startContinuous() {}
 
   void stopContinuous() {}

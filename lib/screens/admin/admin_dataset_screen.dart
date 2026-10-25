@@ -4,6 +4,7 @@ import '../../services/auth_service.dart';
 import '../../services/dataset_service.dart';
 import '../../widgets/skeleton.dart';
 import 'sample_capture_screen.dart';
+import 'sample_list_screen.dart';
 
 class AdminDatasetScreen extends StatefulWidget {
   const AdminDatasetScreen({super.key});
@@ -210,6 +211,122 @@ class _AdminDatasetScreenState extends State<AdminDatasetScreen> {
     );
   }
 
+  void _showEditWordDialog(Map<String, dynamic> word) {
+    final wordController = TextEditingController(text: word['word'] as String);
+    final glossController = TextEditingController(text: word['gloss'] as String);
+    String selectedDomain = _domainOptions.contains(word['domain'])
+        ? word['domain'] as String
+        : 'Other';
+    bool isSaving = false;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Edit Word',
+              style: TextStyle(
+                  color: Color(0xFF1F3864), fontWeight: FontWeight.bold)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: wordController,
+                textDirection: TextDirection.rtl,
+                decoration: const InputDecoration(
+                  labelText: 'Urdu Word',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.text_fields),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: glossController,
+                decoration: const InputDecoration(
+                  labelText: 'English Gloss',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.translate),
+                ),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: selectedDomain,
+                decoration: const InputDecoration(
+                  labelText: 'Domain',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.category_outlined),
+                ),
+                items: _domainOptions
+                    .map((d) => DropdownMenuItem(value: d, child: Text(d)))
+                    .toList(),
+                onChanged: (val) =>
+                    setDialogState(() => selectedDomain = val!),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isSaving ? null : () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1F3864)),
+              onPressed: isSaving
+                  ? null
+                  : () async {
+                      if (wordController.text.trim().isEmpty ||
+                          glossController.text.trim().isEmpty) {
+                        return;
+                      }
+                      final token = _token;
+                      if (token == null) return;
+                      setDialogState(() => isSaving = true);
+
+                      final result = await _datasetService.updateWord(
+                        token: token,
+                        wordId: word['id'] as int,
+                        urduWord: wordController.text.trim(),
+                        englishGloss: glossController.text.trim(),
+                        domain: selectedDomain,
+                      );
+                      if (!mounted) return;
+
+                      if (result['success'] == true) {
+                        Navigator.pop(context);
+                        await _loadWords();
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Word updated'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      } else {
+                        setDialogState(() => isSaving = false);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                                result['message'] ?? 'Failed to update word'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    },
+              child: isSaving
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _deleteWord(Map<String, dynamic> word) async {
     final token = _token;
     if (token == null) return;
@@ -356,6 +473,48 @@ class _AdminDatasetScreenState extends State<AdminDatasetScreen> {
                 icon: const Icon(Icons.videocam),
                 label: const Text('Record Sample Videos'),
                 style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12))),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await Navigator.push(
+                    parentContext,
+                    MaterialPageRoute(
+                      builder: (_) => SampleListScreen(
+                        wordId: word['id'] as int,
+                        urduWord: word['word'] as String,
+                        gloss: word['gloss'] as String,
+                      ),
+                    ),
+                  );
+                  if (mounted) _loadWords(); // counts may have changed
+                },
+                icon: const Icon(Icons.video_library_outlined),
+                label: const Text('View / Delete Samples'),
+                style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(double.infinity, 48),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12))),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _showEditWordDialog(word);
+                },
+                icon: const Icon(Icons.edit_outlined),
+                label: const Text('Edit Word'),
+                style: OutlinedButton.styleFrom(
                     minimumSize: const Size(double.infinity, 48),
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12))),

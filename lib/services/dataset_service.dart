@@ -109,12 +109,15 @@ class DatasetService {
     required Uint8List bytes,
     required String filename,
     double? durationSeconds,
+    double? lightingLevel,
   }) async {
     try {
       final form = FormData.fromMap({
         'video': MultipartFile.fromBytes(bytes, filename: filename),
         if (durationSeconds != null)
           'duration_seconds': durationSeconds.toStringAsFixed(2),
+        if (lightingLevel != null)
+          'lighting_level': lightingLevel.toStringAsFixed(1),
       });
       final response = await _dio.post(
         '$baseUrl/word/$wordId/sample',
@@ -126,6 +129,71 @@ class DatasetService {
           'success': true,
           'sample_count': (response.data['sample_count'] as num?)?.toInt() ?? 0,
         };
+      }
+    } on DioException catch (e) {
+      return {'success': false, 'message': _errorMessage(e)};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
+  /// PUT /api/dataset/word/<id>  - edit Urdu text / gloss / domain.
+  Future<Map<String, dynamic>> updateWord({
+    required String token,
+    required int wordId,
+    required String urduWord,
+    required String englishGloss,
+    String? domain,
+  }) async {
+    try {
+      final response = await _dio.put(
+        '$baseUrl/word/$wordId',
+        data: {
+          'urdu_word': urduWord,
+          'english_gloss': englishGloss,
+          if (domain != null && domain.isNotEmpty) 'domain': domain,
+        },
+        options: _authHeader(token),
+      );
+      if (response.statusCode == 200) {
+        return {'success': true};
+      }
+    } on DioException catch (e) {
+      return {'success': false, 'message': _errorMessage(e)};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
+  /// GET /api/dataset/word/<id>/samples
+  Future<Map<String, dynamic>> getSamples({
+    required String token,
+    required int wordId,
+  }) async {
+    try {
+      final response = await _dio.get(
+        '$baseUrl/word/$wordId/samples',
+        options: _authHeader(token),
+      );
+      if (response.statusCode == 200) {
+        return {'success': true, 'samples': response.data['samples'] ?? []};
+      }
+    } on DioException catch (e) {
+      return {'success': false, 'message': _errorMessage(e)};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
+  /// DELETE /api/dataset/sample/<id>
+  Future<Map<String, dynamic>> deleteSample({
+    required String token,
+    required int sampleId,
+  }) async {
+    try {
+      final response = await _dio.delete(
+        '$baseUrl/sample/$sampleId',
+        options: _authHeader(token),
+      );
+      if (response.statusCode == 200) {
+        return {'success': true};
       }
     } on DioException catch (e) {
       return {'success': false, 'message': _errorMessage(e)};

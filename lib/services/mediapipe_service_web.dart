@@ -35,6 +35,15 @@ external JSString _jsPopSegment();
 @JS('hamkalaamMediaPipe.getSegmentStatus')
 external JSString _jsGetSegmentStatus();
 
+@JS('hamkalaamMediaPipe.startLightMeter')
+external JSPromise<JSBoolean> _jsStartLightMeter();
+
+@JS('hamkalaamMediaPipe.stopLightMeter')
+external void _jsStopLightMeter();
+
+@JS('hamkalaamMediaPipe.getBrightness')
+external JSNumber _jsGetBrightness();
+
 /// Web implementation - talks to web/mediapipe_bridge.js.
 ///
 /// The JS side runs its own independent hidden camera stream and
@@ -116,6 +125,34 @@ class MediaPipeService {
       );
     } catch (_) {
       return HandWindow.empty;
+    }
+  }
+
+  // ---- light meter (admin capture) -----------------------------------
+
+  /// Starts measuring the average picture brightness (0-255).
+  Future<bool> startLightMeter() async {
+    try {
+      final r = await _jsStartLightMeter().toDart;
+      return r.toDart;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void stopLightMeter() {
+    try {
+      _jsStopLightMeter();
+    } catch (_) {}
+  }
+
+  /// Latest brightness 0-255, or null if the meter is not running.
+  double? get brightness {
+    try {
+      final v = _jsGetBrightness().toDartDouble;
+      return v < 0 ? null : v;
+    } catch (_) {
+      return null;
     }
   }
 

@@ -3,9 +3,11 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../services/auth_service.dart';
 import '../../services/camera_helper.dart';
 import '../../services/dataset_service.dart';
+import '../../services/mediapipe_service.dart';
 
 /// Records short sign videos for ONE dataset word and uploads each one
 /// to the server (saved under that word, and counted in its progress).
@@ -52,17 +54,121 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
   late int _sampleCount = widget.initialSampleCount;
   int _savedThisSession = 0;
 
+  // --- lighting check (SRDS FR-15) ---
+  // Brightness is 0-255 (0.299R + 0.587G + 0.114B). The minimum is
+  // adjustable because lighting and cameras differ between rooms/devices.
+  static const double _defaultMinLight = 80;
+  static const String _prefKey = 'light_threshold';
+  final MediaPipeService _lightMeter = MediaPipeService();
+  Timer? _lightTimer;
+  double? _brightness; // null = meter not available (no check done)
+  double _minLight = _defaultMinLight;
+  double _lightSum = 0; // average over the current recording
+  int _lightCount = 0;
+
+  bool get _tooDark => _brightness != null && _brightness! < _minLight;
+
   @override
   void initState() {
     super.initState();
+    _loadThreshold();
     _initCamera();
   }
 
   @override
   void dispose() {
     _tick?.cancel();
+    _lightTimer?.cancel();
+    _lightMeter.stopLightMeter();
+    _lightMeter.dispose();
     _controller?.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadThreshold() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getDouble(_prefKey);
+      if (saved != null && mounted) setState(() => _minLight = saved);
+    } catch (_) {}
+  }
+
+  Future<void> _saveThreshold(double value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_prefKey, value);
+    } catch (_) {}
+  }
+
+  /// Starts the brightness meter once the camera is up.
+  Future<void> _startLightMeter() async {
+    final ok = await _lightMeter.startLightMeter();
+    if (!ok || !mounted) return;
+    _lightTimer?.cancel();
+    _lightTimer = Timer.periodic(const Duration(milliseconds: 400), (_) {
+      if (!mounted) return;
+      final b = _lightMeter.brightness;
+      if (_isRecording && b != null) {
+        _lightSum += b;
+        _lightCount++;
+      }
+      if (b != _brightness) setState(() => _brightness = b);
+    });
+  }
+
+  void _showLightSettings() {
+    double value = _minLight;
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Minimum brightness'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Current picture brightness: '
+                '${_brightness == null ? "not available" : _brightness!.round()}'
+                ' / 255',
+              ),
+              const SizedBox(height: 8),
+              Text('Recording is blocked below: ${value.round()}',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              Slider(
+                value: value,
+                min: 20,
+                max: 180,
+                divisions: 32,
+                label: value.round().toString(),
+                onChanged: (v) => setDialogState(() => value = v),
+              ),
+              const Text(
+                'Default is 80. Lower it for a camera that looks dark by '
+                'itself, raise it for stricter lighting.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setDialogState(() => value = _defaultMinLight);
+              },
+              child: const Text('Reset'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                setState(() => _minLight = value);
+                _saveThreshold(value);
+                Navigator.pop(context);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   String? get _token =>
@@ -104,6 +210,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
         _controller = controller;
         _initializing = false;
       });
+      _startLightMeter();
     } on NoCameraException {
       if (!mounted) return;
       setState(() {
@@ -140,6 +247,14 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       return;
     }
 
+    if (_tooDark) {
+      _snack('Too dark. Improve the lighting before recording.',
+          color: Colors.orange[800]!);
+      return;
+    }
+
+    _lightSum = 0;
+    _lightCount = 0;
     try {
       await c.startVideoRecording();
     } catch (e) {
@@ -211,6 +326,7 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
       bytes: bytes,
       filename: name,
       durationSeconds: seconds,
+      lightingLevel: _lightCount > 0 ? _lightSum / _lightCount : _brightness,
     );
 
     if (!mounted) return;
@@ -303,6 +419,21 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
               ),
             ),
 
+            // Lighting warning (SRDS FR-15)
+            if (_tooDark)
+              Container(
+                width: double.infinity,
+                color: Colors.amber[700],
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Text(
+                  'Insufficient lighting (now ${_brightness!.round()}, '
+                  'need ${_minLight.round()}). Improve lighting and retry.',
+                  style: const TextStyle(
+                      color: Colors.black, fontWeight: FontWeight.w600),
+                ),
+              ),
+
             // Camera area
             Expanded(child: _buildCameraArea()),
 
@@ -333,7 +464,11 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
                       height: 72,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 4),
+                        border: Border.all(
+                            color: (_tooDark && !_isRecording)
+                                ? Colors.white24
+                                : Colors.white,
+                            width: 4),
                       ),
                       child: Center(
                         child: _isUploading
@@ -426,6 +561,36 @@ class _SampleCaptureScreenState extends State<SampleCaptureScreen> {
           child: AspectRatio(
             aspectRatio: c.value.aspectRatio,
             child: CameraPreview(c),
+          ),
+        ),
+        Positioned(
+          top: 12,
+          right: 12,
+          child: GestureDetector(
+            onTap: _showLightSettings,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: (_tooDark ? Colors.amber[800]! : Colors.black)
+                    .withValues(alpha: 0.7),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.light_mode, color: Colors.white, size: 14),
+                  const SizedBox(width: 4),
+                  Text(
+                    _brightness == null
+                        ? 'Light: n/a'
+                        : 'Light ${_brightness!.round()} (min ${_minLight.round()})',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.tune, color: Colors.white70, size: 14),
+                ],
+              ),
+            ),
           ),
         ),
         if (_isRecording)
