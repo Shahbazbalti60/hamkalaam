@@ -144,30 +144,6 @@ class HomeScreen extends StatelessWidget {
               },
             ),
 
-            const SizedBox(height: 28),
-
-            // Dataset info banner
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.blue[50],
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.blue[100]!),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.info_outline, color: Colors.blue[700], size: 22),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Dataset collection is currently in progress. The AI recognition pipeline will be activated once training data is ready.',
-                      style: TextStyle(color: Colors.blue[800], fontSize: 13, height: 1.5),
-                    ),
-                  ),
-                ],
-              ),
-            ),
           ],
         ),
       ),
