@@ -5,6 +5,8 @@ import '../../services/dataset_service.dart';
 import '../auth/login_screen.dart';
 import '../admin/admin_user_management_screen.dart';
 import '../admin/admin_dataset_screen.dart';
+import '../admin/admin_model_screen.dart';
+import '../admin/admin_stats_screen.dart';
 import 'profile_screen.dart';
 
 class AdminHomeScreen extends StatefulWidget {
@@ -223,10 +225,11 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
               _AdminActionCard(
                 icon: Icons.model_training,
                 title: 'Model Management',
-                subtitle: 'Monitor AI model status and trigger retraining',
+                subtitle: 'See the recognition model, its test results, and reload it',
                 onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Model Management — available after dataset collection.')),
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AdminModelScreen()),
                   );
                 },
               ),
@@ -236,10 +239,11 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
               _AdminActionCard(
                 icon: Icons.analytics_outlined,
                 title: 'System Statistics',
-                subtitle: 'View recognition accuracy, session logs, and system health',
+                subtitle: 'View usage, daily activity, popular words, and system health',
                 onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('System Statistics — coming soon.')),
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AdminStatsScreen()),
                   );
                 },
               ),
@@ -261,7 +265,7 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'Dataset collection is the current priority. Capture at least 50 samples per word for all 100 target words before model training begins.',
+                        'Recognition currently uses a model trained on the public SignSpeak PSL dataset. Samples recorded here are kept to improve the model on your own camera and signers.',
                         style: TextStyle(color: Colors.amber[900], fontSize: 13, height: 1.5),
                       ),
                     ),

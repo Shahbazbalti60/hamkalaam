@@ -78,6 +78,63 @@ class AdminService {
     return {'success': false, 'message': 'Something went wrong'};
   }
 
+  /// GET /api/admin/system-stats?tz=<minutes east of UTC>
+  Future<Map<String, dynamic>> getSystemStats(String token) async {
+    try {
+      final tz = DateTime.now().timeZoneOffset.inMinutes;
+      final response = await _dio.get(
+        '$baseUrl/system-stats',
+        queryParameters: {'tz': tz},
+        options: _authHeader(token),
+      );
+      if (response.statusCode == 200 && response.data is Map) {
+        return {'success': true, 'data': Map<String, dynamic>.from(response.data)};
+      }
+    } on DioException catch (e) {
+      return {'success': false, 'message': _errorMessage(e)};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
+  /// GET /api/admin/model-status
+  Future<Map<String, dynamic>> getModelStatus(String token) async {
+    try {
+      final response = await _dio.get(
+        '$baseUrl/model-status',
+        options: _authHeader(token),
+      );
+      if (response.statusCode == 200 && response.data is Map) {
+        return {'success': true, 'data': Map<String, dynamic>.from(response.data)};
+      }
+    } on DioException catch (e) {
+      return {'success': false, 'message': _errorMessage(e)};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
+  /// POST /api/admin/model/reload  (loading the model can take ~10 s)
+  Future<Map<String, dynamic>> reloadModel(String token) async {
+    try {
+      final response = await _dio.post(
+        '$baseUrl/model/reload',
+        options: Options(
+          headers: {'Authorization': 'Bearer $token'},
+          receiveTimeout: const Duration(seconds: 60),
+          sendTimeout: const Duration(seconds: 60),
+        ),
+      );
+      if (response.statusCode == 200) {
+        return {
+          'success': true,
+          'word_count': (response.data['word_count'] as num?)?.toInt() ?? 0,
+        };
+      }
+    } on DioException catch (e) {
+      return {'success': false, 'message': _errorMessage(e)};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
   String _errorMessage(DioException e) {
     if (e.response?.statusCode == 401) {
       return 'Session expired, please log in again';
