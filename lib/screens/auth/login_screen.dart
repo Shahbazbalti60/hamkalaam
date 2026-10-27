@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
+import 'verify_email_screen.dart';
 import '../home/home_screen.dart';
 import '../home/admin_home_screen.dart';
 
@@ -51,6 +52,22 @@ class _LoginScreenState extends State<LoginScreen> {
           context,
           MaterialPageRoute(builder: (_) => const HomeScreen()),
         );
+      }
+    } else if (result['verification_required'] == true) {
+      // Correct password, but the e-mail is not verified yet.
+      final email =
+          (result['email'] as String?) ?? _emailController.text.trim();
+      final verified = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => VerifyEmailScreen(email: email, sendCodeOnOpen: true),
+        ),
+      );
+      if (!mounted) return;
+      if (verified == true) {
+        await _login(); // verified now: sign in with the typed password
+      } else {
+        setState(() => _errorMessage = 'Please verify your email to continue.');
       }
     } else {
       setState(() => _errorMessage = result['message']);

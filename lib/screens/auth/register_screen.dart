@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import 'login_screen.dart';
+import 'verify_email_screen.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -21,6 +22,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String _selectedRole = 'User';
   String? _errorMessage;
   bool _registered = false;
+  bool _verified = false;
+  bool _needsVerification = false;
 
   @override
   void dispose() {
@@ -46,7 +49,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (!mounted) return;
 
     if (result['success']) {
-      setState(() => _registered = true);
+      if (result['verification_required'] == true) {
+        // E-mail verification is switched on: ask for the 6-digit code.
+        final verified = await Navigator.push<bool>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => VerifyEmailScreen(
+              email: (result['email'] as String?) ?? _emailController.text.trim(),
+            ),
+          ),
+        );
+        if (!mounted) return;
+        setState(() {
+          _registered = true;
+          _needsVerification = true;
+          _verified = verified == true;
+        });
+      } else {
+        setState(() => _registered = true);
+      }
     } else {
       setState(() => _errorMessage = result['message']);
     }
@@ -76,9 +97,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       size: 55, color: Colors.green[600]),
                 ),
                 const SizedBox(height: 28),
-                const Text(
-                  'Check Your Email!',
-                  style: TextStyle(
+                Text(
+                  _verified
+                      ? 'Email Verified!'
+                      : (_needsVerification ? 'Almost There!' : 'Account Created!'),
+                  style: const TextStyle(
                     fontSize: 26,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF1F3864),
@@ -86,7 +109,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'We sent a verification link to\n${_emailController.text.trim()}\n\nClick the link to activate your account.',
+                  _verified
+                      ? '${_emailController.text.trim()}\n\nis verified. You can now sign in.'
+                      : (_needsVerification
+                          ? 'Your account is created, but ${_emailController.text.trim()} is not verified yet.\n\nSign in and we will ask for the code again.'
+                          : 'Your account has been created.\n\nYou can now sign in.'),
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     fontSize: 15,

@@ -157,7 +157,15 @@ class AuthService extends ChangeNotifier {
       if (e.response?.statusCode == 401) {
         return {'success': false, 'message': 'Invalid email or password'};
       } else if (e.response?.statusCode == 403) {
-        return {'success': false, 'message': 'Please verify your email first'};
+        final data = e.response?.data;
+        return {
+          'success': false,
+          'message': 'Please verify your email first',
+          if (data is Map && data['verification_required'] == true)
+            'verification_required': true,
+          if (data is Map && data['email'] != null)
+            'email': data['email'].toString(),
+        };
       }
       return {'success': false, 'message': 'Cannot connect to server'};
     }
@@ -187,7 +195,13 @@ class AuthService extends ChangeNotifier {
       notifyListeners();
 
       if (response.statusCode == 201) {
-        return {'success': true};
+        final data = response.data;
+        return {
+          'success': true,
+          'verification_required':
+              data is Map && data['verification_required'] == true,
+          'email': data is Map ? data['email']?.toString() : null,
+        };
       }
     } on DioException catch (e) {
       _isLoading = false;
