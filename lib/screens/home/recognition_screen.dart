@@ -75,6 +75,8 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   final AudioService _audioService = AudioService();
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isSpeaking = false;
+  PlayerState _playerState = PlayerState.stopped; // for Pause / Resume (FR-27)
+  StreamSubscription? _playerSub;
   bool _audioFailed = false; // last audio request failed -> show Retry
   Uint8List? _audioCache; // last spoken audio, so replay needs no network
   String? _audioCacheFor;
@@ -87,6 +89,9 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   void initState() {
     super.initState();
     _initializeCameraFuture = _initCamera();
+    _playerSub = _audioPlayer.onPlayerStateChanged.listen((state) {
+      if (mounted) setState(() => _playerState = state);
+    });
     _handSub = _mediaPipeService.results.listen((result) {
       if (!mounted) return;
       if (result.handDetected != _handDetected ||
@@ -190,6 +195,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   void dispose() {
     _tickTimer?.cancel();
     _handSub?.cancel();
+    _playerSub?.cancel();
     _cameraController?.dispose();
     _mediaPipeService.stopContinuous();
     _mediaPipeService.dispose();
@@ -895,9 +901,33 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    if (_playerState == PlayerState.playing ||
+                        _playerState == PlayerState.paused) ...[
+                      const SizedBox(width: 4),
+                      IconButton(
+                        onPressed: () {
+                          if (_playerState == PlayerState.playing) {
+                            _audioPlayer.pause();
+                          } else {
+                            _audioPlayer.resume();
+                          }
+                        },
+                        icon: Icon(
+                          _playerState == PlayerState.playing
+                              ? Icons.pause_circle_outline
+                              : Icons.play_circle_outline,
+                          color: _navy,
+                          size: 30,
+                        ),
+                        tooltip: _playerState == PlayerState.playing
+                            ? 'Pause'
+                            : 'Resume',
+                      ),
+                    ],
+                    const SizedBox(width: 4),
                     IconButton(
                       onPressed: () {
+                        _audioPlayer.stop();
                         setState(() {
                           _generatedSentence = null;
                           _audioFailed = false;

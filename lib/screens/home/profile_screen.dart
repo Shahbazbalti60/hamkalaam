@@ -1,6 +1,9 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
+import '../../services/profile_service.dart';
 import '../auth/login_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -16,11 +19,140 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _isEditing = false;
   bool _isSaving = false;
 
+  // --- FR-07: photo + Urdu dialect ---
+  static const int _maxPhotoBytes = 2 * 1024 * 1024; // 2 MB
+  final ProfileService _profileService = ProfileService();
+  final ImagePicker _picker = ImagePicker();
+  Uint8List? _photoBytes;
+  bool _photoBusy = false;
+  String _dialect = 'Standard'; // saved value
+  String _dialectEdit = 'Standard'; // value shown while editing
+
+  static const Map<String, String> _dialectLabels = {
+    'Standard': 'Standard Urdu',
+    'Punjabi': 'Punjabi-accented Urdu',
+  };
+
   @override
   void initState() {
     super.initState();
     final authService = Provider.of<AuthService>(context, listen: false);
     _nameController = TextEditingController(text: authService.userName ?? '');
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadExtras());
+  }
+
+  String? get _token =>
+      Provider.of<AuthService>(context, listen: false).accessToken;
+
+  void _toast(String message, {bool error = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: error ? Colors.red : Colors.green,
+      ),
+    );
+  }
+
+  Future<void> _loadExtras() async {
+    final token = _token;
+    if (token == null) return;
+    final extras = await _profileService.getExtras(token);
+    if (!mounted || extras['success'] != true) return;
+    setState(() {
+      _dialect = extras['urdu_dialect'] as String;
+      _dialectEdit = _dialect;
+    });
+    if (extras['has_photo'] == true) {
+      final bytes = await _profileService.getPhoto(token);
+      if (mounted && bytes != null) setState(() => _photoBytes = bytes);
+    }
+  }
+
+  Future<void> _pickPhoto() async {
+    final token = _token;
+    if (token == null) return;
+    try {
+      final file = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 800,
+        maxHeight: 800,
+        imageQuality: 85,
+      );
+      if (file == null) return; // cancelled
+      final bytes = await file.readAsBytes();
+      final name = file.name.toLowerCase();
+      if (!(name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png'))) {
+        _toast('Please choose a JPEG or PNG photo.', error: true);
+        return;
+      }
+      if (bytes.length > _maxPhotoBytes) {
+        _toast('Photo must be 2 MB or smaller.', error: true);
+        return;
+      }
+      setState(() => _photoBusy = true);
+      final result = await _profileService.uploadPhoto(
+        token: token,
+        bytes: bytes,
+        filename: name,
+      );
+      if (!mounted) return;
+      setState(() => _photoBusy = false);
+      if (result['success'] == true) {
+        setState(() => _photoBytes = bytes);
+        _toast('Photo updated.');
+      } else {
+        _toast(result['message'] as String? ?? 'Could not save the photo', error: true);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _photoBusy = false);
+      _toast('Could not open the photo picker.', error: true);
+    }
+  }
+
+  Future<void> _removePhoto() async {
+    final token = _token;
+    if (token == null) return;
+    setState(() => _photoBusy = true);
+    final result = await _profileService.deletePhoto(token);
+    if (!mounted) return;
+    setState(() => _photoBusy = false);
+    if (result['success'] == true) {
+      setState(() => _photoBytes = null);
+      _toast('Photo removed.');
+    } else {
+      _toast(result['message'] as String? ?? 'Could not remove the photo', error: true);
+    }
+  }
+
+  void _showPhotoSheet() {
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choose a photo (JPEG or PNG, max 2 MB)'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _pickPhoto();
+              },
+            ),
+            if (_photoBytes != null)
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Colors.red),
+                title: const Text('Remove photo'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _removePhoto();
+                },
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -77,7 +209,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
         actions: [
           TextButton(
             onPressed: () {
-              setState(() => _isEditing = !_isEditing);
+              setState(() {
+                _isEditing = !_isEditing;
+                _dialectEdit = _dialect;
+              });
             },
             child: Text(
               _isEditing ? 'Cancel' : 'Edit',
@@ -100,6 +235,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     decoration: BoxDecoration(
                       color: const Color(0xFF1F3864),
                       shape: BoxShape.circle,
+                      image: _photoBytes == null
+                          ? null
+                          : DecorationImage(
+                              image: MemoryImage(_photoBytes!),
+                              fit: BoxFit.cover,
+                            ),
                       boxShadow: [
                         BoxShadow(
                           color: const Color(0xFF1F3864).withOpacity(0.3),
@@ -108,32 +249,43 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                       ],
                     ),
-                    child: Center(
-                      child: Text(
-                        (authService.userName ?? 'U')
-                            .substring(0, 1)
-                            .toUpperCase(),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 40,
-                          fontWeight: FontWeight.bold,
-                        ),
+                    child: _photoBytes != null
+                        ? null
+                        : Center(
+                            child: Text(
+                              (authService.userName ?? 'U')
+                                  .substring(0, 1)
+                                  .toUpperCase(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 40,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                  ),
+                  if (_photoBusy)
+                    const Positioned.fill(
+                      child: Center(
+                        child: CircularProgressIndicator(color: Colors.white),
                       ),
                     ),
-                  ),
                   if (_isEditing)
                     Positioned(
                       bottom: 0,
                       right: 0,
-                      child: Container(
-                        width: 30,
-                        height: 30,
-                        decoration: const BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
+                      child: GestureDetector(
+                        onTap: _photoBusy ? null : _showPhotoSheet,
+                        child: Container(
+                          width: 30,
+                          height: 30,
+                          decoration: const BoxDecoration(
+                            color: Colors.white,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.camera_alt,
+                              size: 16, color: Color(0xFF1F3864)),
                         ),
-                        child: const Icon(Icons.camera_alt,
-                            size: 16, color: Color(0xFF1F3864)),
                       ),
                     ),
                 ],
@@ -252,6 +404,37 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           : 'User (Deaf Individual)',
                     ),
 
+                    const SizedBox(height: 16),
+
+                    // Urdu voice dialect (FR-07)
+                    _isEditing
+                        ? DropdownButtonFormField<String>(
+                            initialValue: _dialectEdit,
+                            decoration: InputDecoration(
+                              labelText: 'Urdu dialect',
+                              helperText:
+                                  'Saved with your profile. Dialect voices are not available yet.',
+                              helperMaxLines: 2,
+                              prefixIcon: const Icon(Icons.record_voice_over_outlined),
+                              filled: true,
+                              fillColor: Colors.grey[50],
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            items: _dialectLabels.entries
+                                .map((e) => DropdownMenuItem(
+                                    value: e.key, child: Text(e.value)))
+                                .toList(),
+                            onChanged: (v) =>
+                                setState(() => _dialectEdit = v ?? _dialectEdit),
+                          )
+                        : _InfoRow(
+                            icon: Icons.record_voice_over_outlined,
+                            label: 'Urdu dialect',
+                            value: _dialectLabels[_dialect] ?? _dialect,
+                          ),
+
                     if (_isEditing) ...[
                       const SizedBox(height: 20),
                       _isSaving
@@ -267,6 +450,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                           _nameController.text.trim());
 
                                   if (!mounted) return;
+
+                                  // Dialect (FR-07): saved only when it changed.
+                                  if (result['success'] == true &&
+                                      _dialectEdit != _dialect) {
+                                    final token = authService.accessToken;
+                                    final d = token == null
+                                        ? {'success': false}
+                                        : await _profileService.setDialect(
+                                            token, _dialectEdit);
+                                    if (!mounted) return;
+                                    if (d['success'] == true) {
+                                      _dialect = _dialectEdit;
+                                    } else {
+                                      result['success'] = false;
+                                      result['message'] =
+                                          d['message'] ?? 'Could not save the dialect';
+                                    }
+                                  }
 
                                   setState(() => _isSaving = false);
 
