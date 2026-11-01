@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'hand_detection_result.dart';
+import 'face_reading.dart';
 import 'hand_window.dart';
 
 /// Non-web stub (Android / iOS): no hand detection yet, every call is
@@ -20,6 +21,8 @@ class MediaPipeService {
     await Future.delayed(duration);
     return HandWindow.empty;
   }
+
+  FaceReading get latestFace => FaceReading.none;
 
   Future<bool> startLightMeter() async => false;
 

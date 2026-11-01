@@ -15,6 +15,7 @@
 import {
   FilesetResolver,
   HandLandmarker,
+  FaceLandmarker,
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.20/vision_bundle.mjs";
 
 window.hamkalaamMediaPipe = (function () {
@@ -31,6 +32,15 @@ window.hamkalaamMediaPipe = (function () {
 
   let latestResult = { handDetected: false, handCount: 0, landmarks: [] };
 
+  // ---- face landmarks for the expression CNN (SRDS FR-20) ------------
+  // The same 68 MediaPipe FaceMesh points as app/ai/face_landmarks.py on the
+  // server (eyebrows 20, eyes 20, lips 20, nose bridge 8), in this order.
+  const FACE_INDICES = [46, 53, 52, 65, 55, 70, 63, 105, 66, 107, 276, 283, 282, 295, 285, 300, 293, 334, 296, 336, 33, 160, 159, 158, 133, 153, 145, 144, 163, 7, 362, 385, 386, 387, 263, 249, 390, 373, 374, 380, 61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185, 168, 6, 197, 195, 5, 4, 1, 19];
+  const FACE_EVERY_MS = 120;           // face is checked about 8 times a second
+  let faceLandmarker = null;
+  let lastFaceT = -1000;
+  let latestFace = { detected: false, points: [] };
+
   async function init() {
     if (handLandmarker) return true; // already initialized
     const vision = await FilesetResolver.forVisionTasks(
@@ -45,6 +55,23 @@ window.hamkalaamMediaPipe = (function () {
       runningMode: "VIDEO",
       numHands: 2,
     });
+
+    // The face model is optional: if it cannot be loaded the hand
+    // recognition still works and the expression badge says "no face".
+    try {
+      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+          delegate: "GPU",
+        },
+        runningMode: "VIDEO",
+        numFaces: 1,
+      });
+    } catch (e) {
+      console.warn("Face model could not be loaded:", e);
+      faceLandmarker = null;
+    }
     return true;
   }
 
@@ -54,8 +81,13 @@ window.hamkalaamMediaPipe = (function () {
       await init();
     }
 
+    // Ask for a sharper picture (the browser gives the best the webcam can do).
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user" },
+      video: {
+        facingMode: "user",
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
     });
 
     hiddenVideo = document.createElement("video");
@@ -86,6 +118,7 @@ window.hamkalaamMediaPipe = (function () {
       hiddenVideo = null;
     }
     latestResult = { handDetected: false, handCount: 0, landmarks: [] };
+    latestFace = { detected: false, points: [] };
   }
 
   function round5(v) {
@@ -244,6 +277,30 @@ window.hamkalaamMediaPipe = (function () {
       } catch (e) {
         console.error("MediaPipe detectForVideo error:", e);
       }
+
+      // Face landmarks (separate try, so a face problem never stops the hands)
+      if (faceLandmarker && nowMs - lastFaceT >= FACE_EVERY_MS) {
+        lastFaceT = nowMs;
+        try {
+          const fr = faceLandmarker.detectForVideo(hiddenVideo, nowMs);
+          const face = fr.faceLandmarks && fr.faceLandmarks[0];
+          if (face) {
+            const W = hiddenVideo.videoWidth;
+            const H = hiddenVideo.videoHeight;
+            const pts = [];
+            for (let i = 0; i < FACE_INDICES.length; i++) {
+              const p = face[FACE_INDICES[i]];
+              pts.push(Math.round(p.x * W * 100) / 100);
+              pts.push(Math.round(p.y * H * 100) / 100);
+            }
+            latestFace = { detected: true, points: pts };
+          } else {
+            latestFace = { detected: false, points: [] };
+          }
+        } catch (e) {
+          console.error("FaceLandmarker error:", e);
+        }
+      }
     }
 
     requestAnimationFrame(detectLoop);
@@ -251,6 +308,11 @@ window.hamkalaamMediaPipe = (function () {
 
   function getLatestResult() {
     return JSON.stringify(latestResult);
+  }
+
+  // 68 face points as 136 numbers (x1,y1,x2,y2,...) in camera pixels
+  function getLatestFace() {
+    return JSON.stringify(latestFace);
   }
 
   // ---- window recording -------------------------------------------
@@ -366,7 +428,7 @@ window.hamkalaamMediaPipe = (function () {
   }
 
   return {
-    init, startDetection, stopDetection, getLatestResult,
+    init, startDetection, stopDetection, getLatestResult, getLatestFace,
     startWindow, stopWindow,
     startContinuous, stopContinuous, popSegment, getSegmentStatus,
     startLightMeter, stopLightMeter, getBrightness,

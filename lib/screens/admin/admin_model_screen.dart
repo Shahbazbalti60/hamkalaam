@@ -249,6 +249,9 @@ class _AdminModelScreenState extends State<AdminModelScreen> {
                   ],
                 )),
           const SizedBox(height: 20),
+          _title('Expression model (face)'),
+          _card(_faceCard(d['face'])),
+          const SizedBox(height: 20),
           _title('Vocabulary (${words.length})'),
           _card(words.isEmpty
               ? const Text('labels.json not found.',
@@ -267,6 +270,34 @@ class _AdminModelScreenState extends State<AdminModelScreen> {
                 )),
         ],
       ),
+    );
+  }
+
+  Widget _faceCard(dynamic face) {
+    if (face is! Map) {
+      return const Text(
+        'The face-expression module is not installed on the server yet.',
+        style: TextStyle(color: Colors.grey, height: 1.5),
+      );
+    }
+    final trained = face['trained'] == true;
+    final rows = _resultRows(face['results']);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _row('Type', 'CNN on 68 face landmarks'),
+        _row('Status', trained
+            ? (face['loaded'] == true ? 'Trained and loaded' : 'Trained (loads on first use)')
+            : 'Not trained yet'),
+        _row('Classes', (face['classes'] as List? ?? []).join(', ')),
+        if (rows.isEmpty && trained)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: Text('No face_results.json found next to the model.',
+                style: TextStyle(color: Colors.grey, fontSize: 12)),
+          ),
+        for (final r in rows) _row(r.key, r.value),
+      ],
     );
   }
 

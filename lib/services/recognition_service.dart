@@ -76,6 +76,43 @@ class RecognitionService {
     return {'success': false, 'message': 'Something went wrong'};
   }
 
+  /// POST /api/recognition/expression   (SRDS FR-21)
+  /// [vectors] = face vectors (136 numbers each) from MediaPipeService.latestFace.
+  /// Returns {'success': true, 'results': [{'label': .., 'confidence': ..}]}
+  /// or {'success': false, 'model_ready': false} while the server has no
+  /// trained face model yet, or {'success': false, 'message': ..}.
+  Future<Map<String, dynamic>> classifyExpression({
+    required String token,
+    required List<List<double>> vectors,
+  }) async {
+    try {
+      final response = await _dio.post(
+        '$baseUrl/expression',
+        data: {'landmarks': vectors},
+        options: _authHeader(token),
+      );
+      if (response.statusCode == 200 && response.data is Map) {
+        return {
+          'success': true,
+          'results': List<Map<String, dynamic>>.from(
+              (response.data['results'] as List)
+                  .map((e) => Map<String, dynamic>.from(e))),
+        };
+      }
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      if (e.response?.statusCode == 503 && data is Map && data['model_ready'] == false) {
+        return {
+          'success': false,
+          'model_ready': false,
+          'message': data['error']?.toString(),
+        };
+      }
+      return {'success': false, 'message': _errorMessage(e)};
+    }
+    return {'success': false, 'message': 'Something went wrong'};
+  }
+
   /// POST /api/recognition/classify  (old single-frame dummy)
   Future<Map<String, dynamic>> classify({
     required String token,

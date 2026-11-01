@@ -6,6 +6,7 @@ import '../auth/login_screen.dart';
 import '../admin/admin_user_management_screen.dart';
 import '../admin/admin_dataset_screen.dart';
 import '../admin/admin_model_screen.dart';
+import '../admin/expression_capture_screen.dart';
 import '../admin/admin_stats_screen.dart';
 import 'profile_screen.dart';
 
@@ -216,6 +217,20 @@ class _AdminHomeScreenState extends State<AdminHomeScreen> {
                   Navigator.push(
                     context,
                     MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                  );
+                },
+              ),
+
+              const SizedBox(height: 12),
+
+              _AdminActionCard(
+                icon: Icons.face_retouching_natural,
+                title: 'Expression Samples',
+                subtitle: 'Record face expressions to train the expression model',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const ExpressionCaptureScreen()),
                   );
                 },
               ),

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:js_interop';
 
 import 'hand_detection_result.dart';
+import 'face_reading.dart';
 import 'hand_window.dart';
 
 @JS('hamkalaamMediaPipe.init')
@@ -16,6 +17,9 @@ external void _jsStopDetection();
 
 @JS('hamkalaamMediaPipe.getLatestResult')
 external JSString _jsGetLatestResult();
+
+@JS('hamkalaamMediaPipe.getLatestFace')
+external JSString _jsGetLatestFace();
 
 @JS('hamkalaamMediaPipe.startWindow')
 external void _jsStartWindow();
@@ -125,6 +129,24 @@ class MediaPipeService {
       );
     } catch (_) {
       return HandWindow.empty;
+    }
+  }
+
+  // ---- face landmarks (expression model input, SRDS FR-20) ---------------
+
+  /// The newest face seen (68 points = 136 numbers), or [FaceReading.none].
+  FaceReading get latestFace {
+    try {
+      final data = jsonDecode(_jsGetLatestFace().toDart) as Map<String, dynamic>;
+      if (data['detected'] != true) return FaceReading.none;
+      final pts = (data['points'] as List<dynamic>)
+          .map((v) => (v as num).toDouble())
+          .toList();
+      return pts.length == 136
+          ? FaceReading(detected: true, points: pts)
+          : FaceReading.none;
+    } catch (_) {
+      return FaceReading.none;
     }
   }
 

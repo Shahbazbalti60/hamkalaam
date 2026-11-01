@@ -45,6 +45,16 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   Timer? _tickTimer;
   String _expressionLabel = 'Neutral';
 
+  // --- facial expression (SRDS FR-20 to FR-22) ---
+  static const int _exprEveryMs = 450; // the face is classified about twice a second
+  final List<String> _exprVotes = []; // labels seen while the person signs
+  final List<MapEntry<String, double>> _recentExpr = []; // last few results (smoothing)
+  static const double _minVoteConfidence = 0.6; // weaker guesses never count as votes
+  bool _faceSeen = false;
+  bool _faceModelReady = true; // false until the server has a trained face model
+  bool _exprBusy = false;
+  DateTime _lastExprPoll = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// Model labels (English keys). Shown to the user as Urdu via [_urdu].
   final List<String> _wordStream = [];
   String? _generatedSentence;
@@ -251,6 +261,10 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       _wordStream.clear();
       _generatedSentence = null;
       _expressionLabel = 'Neutral';
+      _exprVotes.clear();
+      _recentExpr.clear();
+      _faceSeen = false;
+      _faceModelReady = true; // ask the server again (it may have been trained meanwhile)
       _resultMessage = null;
       _suggestions = [];
     });
@@ -276,6 +290,9 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
         _wordStream.clear();
         _generatedSentence = null;
         _expressionLabel = 'Neutral';
+        _exprVotes.clear();
+        _recentExpr.clear();
+        _faceSeen = false;
         _resultMessage = null;
         _suggestions = [];
       }
@@ -292,6 +309,8 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       if (mounted && status.isSigning != _signingNow) {
         setState(() => _signingNow = status.isSigning);
       }
+
+      _maybePollExpression(); // keeps the expression badge up to date
 
       // 1) A finished word is waiting -> classify it.
       if (status.queued > 0) {
@@ -316,6 +335,153 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     } finally {
       _ticking = false;
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Facial expression (SRDS FR-20 to FR-22)
+  // ------------------------------------------------------------------
+
+  void _maybePollExpression() {
+    if (!_faceModelReady || _exprBusy) return;
+    final now = DateTime.now();
+    if (now.difference(_lastExprPoll).inMilliseconds < _exprEveryMs) return;
+    _lastExprPoll = now;
+    unawaited(_pollExpression());
+  }
+
+  Future<void> _pollExpression() async {
+    final token = _token;
+    if (token == null || !_listening) return;
+    final face = _mediaPipeService.latestFace;
+    if (!face.detected) {
+      if (_faceSeen && mounted) setState(() => _faceSeen = false);
+      return;
+    }
+    _exprBusy = true;
+    try {
+      final result = await _recognitionService.classifyExpression(
+        token: token,
+        vectors: [face.points],
+      );
+      if (!mounted || !_listening) return;
+      if (result['success'] == true) {
+        final first = (result['results'] as List).first as Map<String, dynamic>;
+        final label = first['label'] as String;
+        final confidence = (first['confidence'] as num).toDouble();
+        // The badge shows a smoothed value (last 5 results), so it does
+        // not flicker between expressions from frame to frame.
+        _recentExpr.add(MapEntry(label, confidence));
+        if (_recentExpr.length > 5) _recentExpr.removeAt(0);
+        final shown = _smoothedExpression();
+        setState(() {
+          _faceSeen = true;
+          _expressionLabel = shown;
+        });
+        // Only confident faces seen while the hands are signing count
+        // (the SRDS takes the majority over the signed sequence).
+        if (confidence >= _minVoteConfidence && (_handDetected || _signingNow)) {
+          _exprVotes.add(label);
+          if (_exprVotes.length > 60) _exprVotes.removeAt(0);
+        }
+      } else if (result['model_ready'] == false) {
+        setState(() => _faceModelReady = false);
+      }
+    } finally {
+      _exprBusy = false;
+    }
+  }
+
+  /// Label with the highest total confidence over the last few results.
+  String _smoothedExpression() {
+    final totals = <String, double>{};
+    for (final e in _recentExpr) {
+      totals[e.key] = (totals[e.key] ?? 0) + e.value;
+    }
+    var best = 'Neutral';
+    var bestTotal = -1.0;
+    totals.forEach((label, t) {
+      if (t > bestTotal) {
+        best = label;
+        bestTotal = t;
+      }
+    });
+    return best;
+  }
+
+  /// The expression of the whole signed sequence: an expression other than
+  /// Neutral counts only if it made up at least half of the confident face
+  /// frames seen while signing. Otherwise the sentence stays Neutral, so one
+  /// stray frown does not turn a sentence into a negation.
+  String _dominantExpression() {
+    if (_exprVotes.isEmpty) return 'Neutral';
+    final counts = <String, int>{};
+    for (final v in _exprVotes) {
+      if (v != 'Neutral') counts[v] = (counts[v] ?? 0) + 1;
+    }
+    var best = 'Neutral';
+    var bestCount = 0;
+    counts.forEach((label, n) {
+      if (n > bestCount) {
+        best = label;
+        bestCount = n;
+      }
+    });
+    return (bestCount * 2 >= _exprVotes.length) ? best : 'Neutral';
+  }
+
+  static const Map<String, IconData> _exprIcons = {
+    'Question': Icons.help_outline,
+    'Negation': Icons.close,
+    'Affirmation': Icons.check,
+    'Neutral': Icons.remove,
+    'Happy': Icons.sentiment_satisfied_alt,
+    'Sad': Icons.sentiment_dissatisfied,
+  };
+  static const Map<String, Color> _exprColors = {
+    'Question': Color(0xFFF9A825),
+    'Negation': Color(0xFFC62828),
+    'Affirmation': Color(0xFF2E7D32),
+    'Neutral': Color(0xFF546E7A),
+    'Happy': Color(0xFF2E7D32),
+    'Sad': Color(0xFF3949AB),
+  };
+
+  Widget _buildExpressionBadge() {
+    String text;
+    IconData icon;
+    Color color;
+    if (!_faceModelReady) {
+      text = 'Face model not trained';
+      icon = Icons.face_retouching_off;
+      color = Colors.grey;
+    } else if (!_faceSeen) {
+      text = 'No face seen';
+      icon = Icons.face_retouching_off;
+      color = Colors.grey;
+    } else {
+      text = _expressionLabel;
+      icon = _exprIcons[_expressionLabel] ?? Icons.face;
+      color = _exprColors[_expressionLabel] ?? Colors.blue;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white, size: 16),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: const TextStyle(
+                color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _classifySegment(HandWindow seg) async {
@@ -408,6 +574,10 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     _finishing = true;
     final words = List<String>.from(_wordStream);
     final token = _token;
+    // The dominant expression of this signed sequence is frozen here and
+    // used as the context for the sentence (SRDS FR-22).
+    final dominant = _dominantExpression();
+    _expressionLabel = dominant;
     _stopListening(keepResult: true);
     if (!mounted) {
       _finishing = false;
@@ -422,7 +592,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       final result = await _recognitionService.generate(
         token: token,
         wordSequence: words,
-        expressionContext: _expressionLabel,
+        expressionContext: dominant,
       );
       final text = result['urdu_sentence'];
       if (result['success'] == true && text is String && text.isNotEmpty) {
@@ -439,7 +609,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     });
     if (token != null) {
       // Background: never blocks the speech or the screen.
-      unawaited(_saveToHistory(token, sentence, words, _expressionLabel));
+      unawaited(_saveToHistory(token, sentence, words, dominant));
     }
     await _playAudio(); // speaks automatically
     _finishing = false;
@@ -613,24 +783,11 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
           child: _buildCameraArea(),
         ),
 
-        if (_listening)
+        if (_listening || _generatedSentence != null)
           Positioned(
             top: 20,
             right: 20,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.blue.withValues(alpha: 0.85),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Text(
-                _expressionLabel,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500),
-              ),
-            ),
+            child: _buildExpressionBadge(),
           ),
 
         if (_listening)
