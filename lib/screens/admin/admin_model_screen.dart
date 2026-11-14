@@ -186,7 +186,7 @@ class _AdminModelScreenState extends State<AdminModelScreen> {
                 ],
               ),
               const SizedBox(height: 14),
-              _row('Type', 'LSTM word recogniser (3 layers)'),
+              _row('Type', (d['description'] as String?) ?? 'LSTM word recogniser (3 layers)'),
               _row('Vocabulary', '${d['word_count']} PSL words'),
               _row('Input', '${d['sequence_length']} frames x hand landmarks'),
               if (d['parameters'] != null)
