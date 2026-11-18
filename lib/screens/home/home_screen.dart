@@ -5,6 +5,7 @@ import '../auth/login_screen.dart';
 import 'profile_screen.dart';
 import 'session_history_screen.dart';
 import 'recognition_screen.dart';
+import 'webview_test_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -120,6 +121,8 @@ class HomeScreen extends StatelessWidget {
 
             const SizedBox(height: 12),
 
+            _FeatureCard(icon: Icons.camera_alt, title: 'Camera test', subtitle: 'Android WebView test', onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WebViewTestScreen()))),
+            const SizedBox(height: 12),
             _FeatureCard(
               icon: Icons.history,
               title: 'Session History',

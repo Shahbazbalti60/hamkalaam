@@ -21,6 +21,7 @@ import {
 window.hamkalaamMediaPipe = (function () {
   let handLandmarker = null;
   let hiddenVideo = null;
+  let ownVideo = false;   // true when we use the page's visible <video id="hk-video">
   let stream = null;
   let running = false;
   let lastVideoTime = -1;
@@ -46,28 +47,41 @@ window.hamkalaamMediaPipe = (function () {
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.20/wasm"
     );
-    handLandmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath:
-          "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-        delegate: "GPU",
-      },
-      runningMode: "VIDEO",
-      numHands: 2,
-    });
+    const makeHand = (delegate) =>
+      HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate: delegate,
+        },
+        runningMode: "VIDEO",
+        numHands: 2,
+      });
+    try {
+      handLandmarker = await makeHand("GPU");
+    } catch (e) {
+      console.warn("GPU delegate failed, using CPU:", e);
+      handLandmarker = await makeHand("CPU");
+    }
 
     // The face model is optional: if it cannot be loaded the hand
     // recognition still works and the expression badge says "no face".
     try {
-      faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath:
-            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-          delegate: "GPU",
-        },
-        runningMode: "VIDEO",
-        numFaces: 1,
-      });
+      const makeFace = (delegate) =>
+        FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath:
+              "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+            delegate: delegate,
+          },
+          runningMode: "VIDEO",
+          numFaces: 1,
+        });
+      try {
+        faceLandmarker = await makeFace("GPU");
+      } catch (e) {
+        faceLandmarker = await makeFace("CPU");
+      }
     } catch (e) {
       console.warn("Face model could not be loaded:", e);
       faceLandmarker = null;
@@ -90,13 +104,15 @@ window.hamkalaamMediaPipe = (function () {
       },
     });
 
-    hiddenVideo = document.createElement("video");
-    hiddenVideo.style.display = "none";
+    const existing = document.getElementById("hk-video");
+    ownVideo = !!existing;
+    hiddenVideo = existing || document.createElement("video");
+    if (!existing) hiddenVideo.style.display = "none";
     hiddenVideo.autoplay = true;
     hiddenVideo.playsInline = true;
     hiddenVideo.muted = true;
     hiddenVideo.srcObject = stream;
-    document.body.appendChild(hiddenVideo);
+    if (!existing) document.body.appendChild(hiddenVideo);
     await hiddenVideo.play();
 
     running = true;
@@ -114,7 +130,8 @@ window.hamkalaamMediaPipe = (function () {
       stream = null;
     }
     if (hiddenVideo) {
-      hiddenVideo.remove();
+      if (ownVideo) hiddenVideo.srcObject = null;
+      else hiddenVideo.remove();
       hiddenVideo = null;
     }
     latestResult = { handDetected: false, handCount: 0, landmarks: [] };

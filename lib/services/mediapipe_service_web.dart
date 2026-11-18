@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
 
+import 'package:flutter/widgets.dart';
+
 import 'hand_detection_result.dart';
 import 'face_reading.dart';
 import 'hand_window.dart';
@@ -62,6 +64,12 @@ class MediaPipeService {
   Stream<HandDetectionResult> get results => _controller.stream;
 
   bool _initialized = false;
+
+  /// On the web the picture comes from the Flutter camera preview, so there
+  /// is no separate preview widget here (the phone version has one).
+  Widget? get previewWidget => null;
+
+  String? get lastError => null;
 
   /// Loads the MediaPipe model. Safe to call multiple times.
   Future<bool> init() async {

@@ -405,14 +405,7 @@ class _ExpressionCaptureScreenState extends State<ExpressionCaptureScreen> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        FittedBox(
-          fit: BoxFit.contain,
-          child: SizedBox(
-            width: _camera!.value.previewSize?.height ?? 1,
-            height: _camera!.value.previewSize?.width ?? 1,
-            child: CameraPreview(_camera!),
-          ),
-        ),
+        Center(child: CameraPreview(_camera!)),
         Positioned(
           top: 10,
           left: 10,

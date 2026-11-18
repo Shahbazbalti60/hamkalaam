@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:provider/provider.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../data/psl_words_ur.dart';
 import '../../services/auth_service.dart';
 import '../../services/mediapipe_service.dart';
@@ -29,8 +31,12 @@ class RecognitionScreen extends StatefulWidget {
 class _RecognitionScreenState extends State<RecognitionScreen> {
   static const Color _navy = Color(0xFF1F3864);
 
-  /// No hand for this long after at least one word = the sentence is over.
-  static const int _sentencePauseMs = 2000;
+  /// After the last word, the app waits this long for your NEXT sign before it
+  /// makes and speaks the sentence. Change it with the timer icon at the top.
+  static const int _defaultPauseMs = 4000;
+  static const String _pauseKey = 'sentence_pause_ms';
+  int _pauseMs = _defaultPauseMs;
+  int? _waitLeft; // seconds left before the sentence is spoken (shown on screen)
 
   /// Nobody signed anything for this long = stop listening.
   static const int _idleTimeoutMs = 20000;
@@ -75,6 +81,8 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   StreamSubscription? _handSub;
   bool _handDetected = false;
   int _handCount = 0;
+  // Android: the camera picture is the WebView that runs the detector.
+  bool _phoneReady = false;
   bool _aiChecked = false;
   bool _aiReady = false;
   bool _modelChecked = false;
@@ -98,6 +106,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   @override
   void initState() {
     super.initState();
+    _loadPause();
     _initializeCameraFuture = _initCamera();
     _playerSub = _audioPlayer.onPlayerStateChanged.listen((state) {
       if (mounted) setState(() => _playerState = state);
@@ -116,7 +125,98 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
   String _urdu(String label) => pslUrdu[label] ?? label;
 
+  Future<void> _loadPause() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getInt(_pauseKey);
+      if (saved != null && mounted) setState(() => _pauseMs = saved.clamp(1500, 10000));
+    } catch (_) {}
+  }
+
+  void _showPauseSettings() {
+    double value = _pauseMs / 1000;
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Wait for the next sign'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'After your last word the app waits ${value.toStringAsFixed(1)} seconds '
+                'for another sign. If you sign nothing, it makes the sentence and speaks it.',
+              ),
+              Slider(
+                value: value,
+                min: 2,
+                max: 8,
+                divisions: 12,
+                label: '${value.toStringAsFixed(1)} s',
+                onChanged: (v) => setDialogState(() => value = v),
+              ),
+              const Text(
+                'You can always tap "Sentence now" to speak at once.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => setDialogState(() => value = _defaultPauseMs / 1000),
+              child: const Text('Reset'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                setState(() => _pauseMs = (value * 1000).round());
+                try {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setInt(_pauseKey, _pauseMs);
+                } catch (_) {}
+                if (context.mounted) Navigator.pop(context);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Android / iOS: the detector and the camera picture live in one WebView.
+  Future<void> _initPhoneCamera() async {
+    if (mounted) {
+      setState(() {
+        _cameraError = null;
+        _phoneReady = false;
+        _cameraStatus =
+            'Starting camera and sign detector...\n(the first time it needs internet)';
+      });
+    }
+    // init() creates the WebView straight away, so show it while it loads.
+    final loading = _mediaPipeService.init();
+    if (mounted) setState(() {});
+    final ok = await loading;
+    if (!mounted) return;
+    if (!ok) {
+      setState(() => _cameraError = _mediaPipeService.lastError ??
+          'Could not start the sign detector. Check the internet connection.');
+      return;
+    }
+    final started = await _mediaPipeService.startDetection();
+    if (!mounted) return;
+    if (!started) {
+      setState(() => _cameraError = _mediaPipeService.lastError ??
+          'Could not start the camera.');
+      return;
+    }
+    setState(() => _phoneReady = true);
+    _warmUpAi();
+  }
+
   Future<void> _initCamera() async {
+    if (!kIsWeb) return _initPhoneCamera();
     if (_cameraController != null) {
       await _cameraController!.dispose();
       _cameraController = null;
@@ -232,7 +332,10 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
   Future<void> _startListening() async {
     if (_listening || _isStarting || _finishing) return;
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+    final cameraReady = kIsWeb
+        ? (_cameraController != null && _cameraController!.value.isInitialized)
+        : _phoneReady;
+    if (!cameraReady) {
       _toast('Camera is not ready yet.');
       return;
     }
@@ -248,7 +351,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
     if (!started) {
       _toast(
-          'Hand detection could not start. It works in Chrome on a computer.',
+          _mediaPipeService.lastError ?? 'Hand detection could not start.',
           error: true);
       return;
     }
@@ -278,10 +381,12 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     _tickTimer?.cancel();
     _tickTimer = null;
     _mediaPipeService.stopContinuous();
-    _mediaPipeService.stopDetection();
+    // On the phone the camera picture IS the detector, so it stays running.
+    if (kIsWeb) _mediaPipeService.stopDetection();
     if (!mounted) return;
     setState(() {
       _listening = false;
+      _waitLeft = null;
       _signingNow = false;
       _classifying = false;
       _handDetected = false;
@@ -321,8 +426,16 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
 
       if (status.isSigning || _classifying) return;
 
+      // Countdown shown on screen while the app waits for the next sign.
+      if (_wordStream.isNotEmpty) {
+        final left = ((_pauseMs - status.msSinceHand) / 1000).ceil().clamp(0, 99);
+        if (left != _waitLeft && mounted) setState(() => _waitLeft = left);
+      } else if (_waitLeft != null && mounted) {
+        setState(() => _waitLeft = null);
+      }
+
       // 2) Pause after at least one word -> sentence is over.
-      if (_wordStream.isNotEmpty && status.msSinceHand >= _sentencePauseMs) {
+      if (_wordStream.isNotEmpty && status.msSinceHand >= _pauseMs) {
         await _finishSentence();
         return;
       }
@@ -725,6 +838,9 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
     if (_classifying) return 'Recognising...';
     if (_signingNow) return 'Signing detected...';
     if (_wordStream.isEmpty) return 'Listening. Raise your hand and sign.';
+    if (_waitLeft != null) {
+      return 'Sign your next word... speaking in ${_waitLeft}s';
+    }
     return 'Listening. Stop signing to finish the sentence.';
   }
 
@@ -739,6 +855,11 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
             style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
           IconButton(
+            icon: const Icon(Icons.timer_outlined, color: Colors.white54),
+            tooltip: 'How long to wait for the next sign',
+            onPressed: _showPauseSettings,
+          ),
+          IconButton(
             icon: const Icon(Icons.info_outline, color: Colors.white54),
             onPressed: () {
               showDialog(
@@ -749,7 +870,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
                     '1. Tap "Start Signing"\n'
                     '2. Sign your words. Put your hands down for a moment between words\n'
                     '3. Each word appears in Urdu as you sign\n'
-                    '4. When you stop signing for about 2 seconds, the sentence is made and spoken automatically',
+                    '4. When you stop signing for a few seconds (change it with the timer icon), the sentence is made and spoken automatically',
                     style: TextStyle(height: 1.6),
                   ),
                   actions: [
@@ -1220,6 +1341,37 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
       );
     }
 
+    if (!kIsWeb) {
+      final preview = _mediaPipeService.previewWidget;
+      return Container(
+        color: Colors.black,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (preview != null) preview,
+            if (!_phoneReady)
+              Container(
+                color: Colors.black,
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(color: Colors.white38),
+                    const SizedBox(height: 14),
+                    Text(
+                      _cameraStatus,
+                      textAlign: TextAlign.center,
+                      style:
+                          const TextStyle(color: Colors.white54, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
     return FutureBuilder<void>(
       future: _initializeCameraFuture,
       builder: (context, snapshot) {
@@ -1241,18 +1393,12 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
           );
         }
 
-        return ClipRect(
-          child: OverflowBox(
-            alignment: Alignment.center,
-            child: FittedBox(
-              fit: BoxFit.cover,
-              child: SizedBox(
-                width: _cameraController!.value.previewSize?.height ?? 1,
-                height: _cameraController!.value.previewSize?.width ?? 1,
-                child: CameraPreview(_cameraController!),
-              ),
-            ),
-          ),
+        // CameraPreview keeps the camera's own proportions and fits inside
+        // the area, so you see the whole picture (no zoomed-in crop).
+        return Container(
+          color: Colors.black,
+          alignment: Alignment.center,
+          child: CameraPreview(_cameraController!),
         );
       },
     );
