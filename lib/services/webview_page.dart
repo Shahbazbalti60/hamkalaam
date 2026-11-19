@@ -52,6 +52,15 @@ window.hamkalaamMediaPipe = (function () {
 
   let latestResult = { handDetected: false, handCount: 0, landmarks: [] };
 
+  // ---- picture-shape correction (phone) --------------------------------
+  // MediaPipe gives x as a fraction of the picture WIDTH and y as a fraction
+  // of the HEIGHT. A tall phone picture therefore stretches the hands sideways
+  // compared with the wide pictures the model was trained on. When
+  // aspectRef > 0, x (and z, which uses the same scale) is shrunk around the
+  // middle of the picture by  (width/height) / aspectRef.  0 = off (web).
+  let aspectRef = 0;
+  function setAspectRef(v) { aspectRef = Number(v) || 0; }
+
   // ---- face landmarks for the expression CNN (SRDS FR-20) ------------
   // The same 68 MediaPipe FaceMesh points as app/ai/face_landmarks.py on the
   // server (eyebrows 20, eyes 20, lips 20, nose bridge 8), in this order.
@@ -108,7 +117,7 @@ window.hamkalaamMediaPipe = (function () {
     return true;
   }
 
-  async function startDetection() {
+  async function startDetection(facing) {
     if (running) return true;
     if (!handLandmarker) {
       await init();
@@ -117,7 +126,7 @@ window.hamkalaamMediaPipe = (function () {
     // Ask for a sharper picture (the browser gives the best the webcam can do).
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
-        facingMode: "user",
+        facingMode: facing || "user",
         width: { ideal: 1280 },
         height: { ideal: 720 },
       },
@@ -287,13 +296,21 @@ window.hamkalaamMediaPipe = (function () {
 
         // 2 hands x 21 points x 3 coords = 126 values, zeros when absent.
         const flat = [];
+        const vw = hiddenVideo.videoWidth, vh = hiddenVideo.videoHeight;
+        const kx = (aspectRef > 0 && vw > 0 && vh > 0) ? (vw / vh) / aspectRef : 1;
         for (let h = 0; h < 2; h++) {
           const hand = result.landmarks && result.landmarks[h];
           for (let p = 0; p < 21; p++) {
             const point = hand && hand[p];
-            flat.push(point ? point.x : 0);
-            flat.push(point ? point.y : 0);
-            flat.push(point ? point.z : 0);
+            if (point && kx !== 1) {
+              flat.push(0.5 + (point.x - 0.5) * kx);
+              flat.push(point.y);
+              flat.push(point.z * kx);
+            } else {
+              flat.push(point ? point.x : 0);
+              flat.push(point ? point.y : 0);
+              flat.push(point ? point.z : 0);
+            }
           }
         }
 
@@ -464,7 +481,7 @@ window.hamkalaamMediaPipe = (function () {
   }
 
   return {
-    init, startDetection, stopDetection, getLatestResult, getLatestFace,
+    init, setAspectRef, startDetection, stopDetection, getLatestResult, getLatestFace,
     startWindow, stopWindow,
     startContinuous, stopContinuous, popSegment, getSegmentStatus,
     startLightMeter, stopLightMeter, getBrightness,
@@ -479,13 +496,17 @@ const info = document.getElementById("hkinfo");
 function post(o){ try{ Hamkalaam.postMessage(JSON.stringify(o)); }catch(e){} }
 let pump = null;
 window.hkInit = async function(){
+  mp.setAspectRef(1.5);   // phone picture-shape correction (see mediapipe_bridge.js)
   post({type:'log', message:'module running, loading models...'});
   try { await mp.init(); post({type:'ready'}); }
   catch(e){ post({type:'error', where:'init', message:String(e)}); }
 };
-window.hkStart = async function(){
+window.hkStart = async function(facing){
   post({type:'log', message:'asking camera...'});
-  try { await mp.startDetection(); startPump(); post({type:'started'}); }
+  try {
+    const v = document.getElementById('hk-video');
+    if (v) v.style.transform = (facing === 'environment') ? 'none' : 'scaleX(-1)';
+    await mp.startDetection(facing || 'user'); startPump(); post({type:'started'}); }
   catch(e){ post({type:'error', where:'start', message:String(e)}); }
 };
 window.hkStop = function(){

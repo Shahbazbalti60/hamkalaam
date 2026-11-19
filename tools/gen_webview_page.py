@@ -15,13 +15,17 @@ const info = document.getElementById("hkinfo");
 function post(o){ try{ Hamkalaam.postMessage(JSON.stringify(o)); }catch(e){} }
 let pump = null;
 window.hkInit = async function(){
+  mp.setAspectRef(1.5);   // phone picture-shape correction (see mediapipe_bridge.js)
   post({type:'log', message:'module running, loading models...'});
   try { await mp.init(); post({type:'ready'}); }
   catch(e){ post({type:'error', where:'init', message:String(e)}); }
 };
-window.hkStart = async function(){
+window.hkStart = async function(facing){
   post({type:'log', message:'asking camera...'});
-  try { await mp.startDetection(); startPump(); post({type:'started'}); }
+  try {
+    const v = document.getElementById('hk-video');
+    if (v) v.style.transform = (facing === 'environment') ? 'none' : 'scaleX(-1)';
+    await mp.startDetection(facing || 'user'); startPump(); post({type:'started'}); }
   catch(e){ post({type:'error', where:'start', message:String(e)}); }
 };
 window.hkStop = function(){
@@ -64,8 +68,8 @@ html_head = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 html,body{margin:0;height:100%;background:#000;overflow:hidden}
-#hk-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform:scaleX(-1);background:#000}
-#hkinfo{position:absolute;left:8px;bottom:8px;color:#fff;font:13px sans-serif;background:rgba(0,0,0,.55);padding:3px 8px;border-radius:6px}
+#hk-video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);background:#000}
+#hkinfo{display:none;position:absolute;left:8px;bottom:8px;color:#fff;font:13px sans-serif;background:rgba(0,0,0,.55);padding:3px 8px;border-radius:6px}
 </style></head><body>
 <video id="hk-video" autoplay playsinline muted></video>
 <div id="hkinfo">loading...</div>

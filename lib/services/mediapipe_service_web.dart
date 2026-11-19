@@ -71,6 +71,11 @@ class MediaPipeService {
 
   String? get lastError => null;
 
+  bool get usingBackCamera => false;
+
+  /// Not used on the web (the browser picks its own camera).
+  Future<bool> switchCamera() async => false;
+
   /// Loads the MediaPipe model. Safe to call multiple times.
   Future<bool> init() async {
     if (_initialized) return true;

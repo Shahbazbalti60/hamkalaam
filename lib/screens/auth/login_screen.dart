@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:dio/dio.dart';
 import 'package:provider/provider.dart';
+import '../../config/app_config.dart';
 import '../../services/auth_service.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
@@ -20,6 +22,124 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    // Use the saved server address (if the person set one).
+    AppConfig.load().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  /// Dialog to type the server address, test it, save it or reset it.
+  Future<void> _showServerDialog() async {
+    final controller = TextEditingController(text: AppConfig.apiHost);
+    String? result;
+    bool? ok;
+    bool testing = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: const Text('Server address'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'The address of the PC running the HamKalaam backend, '
+                'for example 192.168.1.25 (find it with ipconfig on the PC).',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                keyboardType: TextInputType.url,
+                autocorrect: false,
+                decoration: const InputDecoration(
+                  labelText: 'Server',
+                  hintText: 'http://192.168.1.25:5000',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 10),
+              if (testing)
+                const Row(children: [
+                  SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2)),
+                  SizedBox(width: 8),
+                  Text('Testing...'),
+                ])
+              else if (result != null)
+                Text(
+                  result!,
+                  style: TextStyle(
+                      color: ok == true ? Colors.green[700] : Colors.red[700],
+                      fontSize: 13),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await AppConfig.reset();
+                controller.text = AppConfig.apiHost;
+                setLocal(() {
+                  ok = true;
+                  result = 'Back to the default address.';
+                });
+                if (mounted) setState(() {});
+              },
+              child: const Text('Reset'),
+            ),
+            TextButton(
+              onPressed: testing
+                  ? null
+                  : () async {
+                      final host = AppConfig.normalise(controller.text);
+                      setLocal(() {
+                        testing = true;
+                        result = null;
+                      });
+                      try {
+                        await Dio().get(
+                          host,
+                          options: Options(
+                            validateStatus: (_) => true,
+                            sendTimeout: const Duration(seconds: 5),
+                            receiveTimeout: const Duration(seconds: 5),
+                          ),
+                        );
+                        ok = true;
+                        result = 'Connected.';
+                      } catch (_) {
+                        ok = false;
+                        result =
+                            'Cannot reach the server. Check the address, that '
+                            'the backend is running, and the same Wi-Fi.';
+                      }
+                      setLocal(() => testing = false);
+                    },
+              child: const Text('Test'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                await AppConfig.save(controller.text);
+                if (mounted) setState(() {});
+                if (dialogContext.mounted) Navigator.pop(dialogContext);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+  }
 
   @override
   void dispose() {
@@ -86,7 +206,15 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 40),
+              Align(
+                alignment: Alignment.centerRight,
+                child: IconButton(
+                  tooltip: 'Server address',
+                  icon: const Icon(Icons.dns_outlined, color: Color(0xFF2E5090)),
+                  onPressed: _showServerDialog,
+                ),
+              ),
+              const SizedBox(height: 16),
 
               // Header
               Center(
@@ -121,6 +249,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         fontSize: 15,
                         color: Colors.grey,
                       ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Server: ${AppConfig.apiHost}',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                   ],
                 ),

@@ -26,12 +26,16 @@ class MediaPipeService {
   bool _ready = false;
   bool _started = false;
   String? _lastError;
+  String _facing = 'user'; // 'user' = front camera, 'environment' = back
 
   FaceReading _face = FaceReading.none;
   SegmentStatus _status = SegmentStatus.idle;
   final List<HandWindow> _segments = [];
 
   Stream<HandDetectionResult> get results => _results.stream;
+
+  /// True while the back camera is in use.
+  bool get usingBackCamera => _facing == 'environment';
 
   /// The last problem text (for the screen to show), or null.
   String? get lastError => _lastError;
@@ -200,11 +204,36 @@ class MediaPipeService {
     final ok = await init();
     if (!ok || _controller == null) return false;
     _startedC = Completer<bool>();
-    await _js('hkStart()');
+    await _js("hkStart('$_facing')");
     return _startedC!.future.timeout(const Duration(seconds: 25), onTimeout: () {
       _fail('The camera did not start.');
       return false;
     });
+  }
+
+  /// Switches between the front and the back camera. Returns true when the
+  /// new camera is running. (If it fails, the old camera is started again.)
+  Future<bool> switchCamera() async {
+    if (_controller == null || !_ready) return false;
+    final previous = _facing;
+    _facing = previous == 'user' ? 'environment' : 'user';
+    _started = false;
+    _segments.clear();
+    _face = FaceReading.none;
+    _lastError = null;
+    await _js('hkStop()');
+    await Future.delayed(const Duration(milliseconds: 300));
+    var ok = await startDetection();
+    if (!ok) {
+      // go back to the camera that worked
+      _facing = previous;
+      _started = false;
+      _lastError = null;
+      await _js('hkStop()');
+      await Future.delayed(const Duration(milliseconds: 300));
+      await startDetection();
+    }
+    return ok;
   }
 
   void stopDetection() {

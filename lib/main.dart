@@ -1,9 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:hamkalaam/config/app_config.dart';
 import 'package:provider/provider.dart';
+import 'package:hamkalaam/config/app_config.dart';
 import 'screens/auth/splash_screen.dart';
+import 'package:hamkalaam/config/app_config.dart';
 import 'services/auth_service.dart';
+import 'package:hamkalaam/config/app_config.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppConfig.load();
   runApp(
     ChangeNotifierProvider(
       create: (context) => AuthService(),

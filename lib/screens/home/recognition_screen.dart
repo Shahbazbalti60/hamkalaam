@@ -83,6 +83,7 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
   int _handCount = 0;
   // Android: the camera picture is the WebView that runs the detector.
   bool _phoneReady = false;
+  bool _switchingCamera = false;
   bool _aiChecked = false;
   bool _aiReady = false;
   bool _modelChecked = false;
@@ -182,6 +183,20 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _switchCamera() async {
+    if (_switchingCamera || _isStarting || _finishing) return;
+    setState(() => _switchingCamera = true);
+    final ok = await _mediaPipeService.switchCamera();
+    if (!mounted) return;
+    if (_listening) _mediaPipeService.startContinuous();
+    setState(() => _switchingCamera = false);
+    if (!ok) {
+      _toast(
+          _mediaPipeService.lastError ?? 'That camera could not be started.',
+          error: true);
+    }
   }
 
   /// Android / iOS: the detector and the camera picture live in one WebView.
@@ -1349,6 +1364,29 @@ class _RecognitionScreenState extends State<RecognitionScreen> {
           fit: StackFit.expand,
           children: [
             if (preview != null) preview,
+            if (_phoneReady)
+              Positioned(
+                top: 12,
+                left: 12,
+                child: Material(
+                  color: Colors.black54,
+                  shape: const CircleBorder(),
+                  child: IconButton(
+                    tooltip: _mediaPipeService.usingBackCamera
+                        ? 'Use front camera'
+                        : 'Use back camera',
+                    icon: _switchingCamera
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.cameraswitch, color: Colors.white),
+                    onPressed: _switchingCamera ? null : _switchCamera,
+                  ),
+                ),
+              ),
             if (!_phoneReady)
               Container(
                 color: Colors.black,
